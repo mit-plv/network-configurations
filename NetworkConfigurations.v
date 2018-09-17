@@ -18,7 +18,7 @@ Record flow := {
 
 Definition network_topology (Router : Set) := Router -> Router -> bool.
 
-Definition firewall_config R := network_topology R -> flow -> bool.
+Definition network_policy R := network_topology R -> flow -> bool.
 
-Definition nonexistent_firewall : firewall_config ipAddress :=
+Definition everything_allowed_policy : network_policy ipAddress :=
   (fun _ _ => true).
