@@ -57,9 +57,8 @@ Section Node.
 
   Definition next_node_generator := network_topology -> network_policy -> next_node.
 
-  Definition next_node_generator_valid (generator : next_node_generator) (topology_filter : network_topology -> Prop) (policy_filter : network_policy -> Prop) := forall topology policy,
+  Definition next_node_generator_valid (generator : next_node_generator) (topology_filter : network_topology -> Prop) := forall topology policy,
     topology_filter topology
-      -> policy_filter policy
       -> next_node_valid topology policy (generator topology policy).
 
   Record is_spanning_tree (topology reduced_topology : network_topology) := {
@@ -205,9 +204,9 @@ Section Node.
   Definition spanning_tree_next_node_generator topology policy :=
     spanning_tree_next_node_generator' (make_spanning_tree topology) policy.
 
-  Theorem spanning_tree_next_node_generator_valid (topology_filter : network_topology -> Prop) (policy_filter : network_policy -> Prop) :
+  Theorem spanning_tree_next_node_generator_valid (topology_filter : network_topology -> Prop) :
     spanning_tree_generator_valid topology_filter
-      -> next_node_generator_valid spanning_tree_next_node_generator topology_filter policy_filter.
+      -> next_node_generator_valid spanning_tree_next_node_generator topology_filter.
   Proof.
     unfold next_node_generator_valid, spanning_tree_next_node_generator.
     intros.
@@ -316,7 +315,7 @@ Section NetworkExample.
 
   Local Theorem validity : next_node_valid ExampleVertex example_topology example_policy next.
   Proof.
-    assert (next_node_generator_valid ExampleVertex (spanning_tree_next_node_generator ExampleVertex make_example_spanning_tree) (fun t => t = example_topology) (fun p => p = example_policy)); try eauto.
+    assert (next_node_generator_valid ExampleVertex (spanning_tree_next_node_generator ExampleVertex make_example_spanning_tree) (fun t => t = example_topology)); try eauto.
     apply spanning_tree_next_node_generator_valid.
     unfold spanning_tree_generator_valid.
     intros.
