@@ -266,11 +266,6 @@ Section NetworkExample.
 
   Local Definition make_example_spanning_tree (_ : network_topology ExampleVertex) := example_spanning_tree.
 
-  Local Definition example_policy (_ : flow ExampleVertex) := true.
-
-  Local Definition next : next_node ExampleVertex :=
-    spanning_tree_next_node_generator ExampleVertex make_example_spanning_tree example_topology example_policy.
-
   Lemma long_paths_have_duplicates : forall (path : list ExampleVertex),
     length path < 5 \/ ~contains_no_duplicates path.
   Proof.
@@ -313,7 +308,9 @@ Section NetworkExample.
     tauto.
   Qed.
 
-  Local Theorem validity : next_node_valid ExampleVertex example_topology example_policy next.
+  Local Theorem validity : forall policy,
+    next_node_valid ExampleVertex example_topology policy
+      (spanning_tree_next_node_generator ExampleVertex make_example_spanning_tree example_topology policy).
   Proof.
     assert (next_node_generator_valid ExampleVertex (spanning_tree_next_node_generator ExampleVertex make_example_spanning_tree) (fun t => t = example_topology)); try eauto.
     apply spanning_tree_next_node_generator_valid.
