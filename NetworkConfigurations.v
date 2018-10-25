@@ -1,5 +1,6 @@
 Require Import Coq.Lists.List.
 Require Import Coq.Program.Equality.
+Require Import ZArith.
 
 Section Node.
   Variable Node : Set.
@@ -23,22 +24,27 @@ Section Node.
         is_next_node_path next cdr hop_target current_flow
     end.
 
-  Record next_node_valid (topology : network_topology) (policy : network_policy) (next : next_node) := {
-    all_hops_in_topology : forall src dest hop_target,
-      next src dest hop_target -> topology src hop_target;
+  Fixpoint contains_no_duplicates {A} (l : list A) :=
+    match l with
+    | nil => True
+    | cons car cdr => ~In car cdr /\ contains_no_duplicates cdr
+    end.
 
-    path_exists_only_for_valid_flows : forall flow,
-      flow.(Src) <> flow.(Dest)
-        -> (policy flow = true <-> exists path,
-              is_next_node_path next path flow.(Src) flow);
+  Record next_node_valid (topology : network_topology) (policy : network_policy) (next : next_node) := {
+    all_hops_in_topology : forall here current_flow hop_target,
+      next here current_flow hop_target -> topology here hop_target;
+
+    path_exists_only_for_valid_flows : forall current_flow,
+      current_flow.(Src) <> current_flow.(Dest)
+        -> (policy current_flow = true <-> exists path,
+              is_next_node_path next path current_flow.(Src) current_flow);
 
     no_black_holes : forall src current_flow hop_target,
       next src current_flow hop_target
         -> exists path, is_next_node_path next path hop_target current_flow;
 
-    (* FIXME: only considers tail loops *)
-    all_paths_acyclic : forall src node path,
-      is_next_node_path next path node {| Src := src; Dest := node |} -> path = nil
+    all_paths_acyclic : forall path here current_flow,
+      is_next_node_path next path here current_flow -> contains_no_duplicates (here :: path)
   }.
 
   Fixpoint is_path_in_topology (topology : network_topology) src dest path :=
@@ -49,172 +55,238 @@ Section Node.
       is_path_in_topology topology hop_target dest cdr
     end.
 
-  Fixpoint contains_no_duplicates {A} (l : list A) :=
-    match l with
-    | nil => True
-    | cons car cdr => ~In car cdr /\ contains_no_duplicates cdr
-    end.
-
   Definition next_node_generator := network_topology -> network_policy -> next_node.
 
-  Definition next_node_generator_valid (generator : next_node_generator) (topology_filter : network_topology -> Prop) := forall topology policy,
-    topology_filter topology
-      -> next_node_valid topology policy (generator topology policy).
+  Definition next_node_generator_valid (generator : next_node_generator) := forall topology policy,
+    next_node_valid topology policy (generator topology policy).
 
-  Record is_spanning_tree (topology reduced_topology : network_topology) := {
-    is_subgraph : forall n1 n2,
-      reduced_topology n1 n2 -> topology n1 n2;
-    is_tree : forall src dest,
-      exists! path,
-        is_path_in_topology reduced_topology src dest path /\
-        contains_no_duplicates (cons src path)
+  Definition all_pairs_paths := Node -> Node -> option (list Node).
+
+  Definition all_pairs_paths_next_node_generator
+    (paths : all_pairs_paths)
+    (topology : network_topology)
+    (policy : network_policy)
+    here
+    current_flow
+    hop_target
+  :=
+    policy current_flow = true /\
+    match paths here current_flow.(Dest) with
+    | Some (hop_target' :: _) => hop_target = hop_target'
+    | _ => False
+    end.
+
+  Record all_pairs_paths_valid paths topology policy := {
+    paths_in_topology : forall src dest,
+      match paths src dest with
+      | Some path => is_path_in_topology topology src dest path
+      | _ => True
+      end;
+    paths_exist_for_valid_flows : forall current_flow,
+      policy current_flow = true
+        ->
+          match paths current_flow.(Src) current_flow.(Dest) with
+          | Some _ => True
+          | None => False
+          end;
+    paths_move_closer_to_destination : forall src dest,
+      match paths src dest with
+      | Some (hop_target :: cdr) =>
+        match paths hop_target dest with
+        | Some path => length path <= length cdr
+        | None => False
+        end
+      | _ => True
+      end
   }.
 
-  Definition spanning_tree_next_node_generator' topology (policy : network_policy) src current_flow target :=
-    policy current_flow = true /\
-    exists path,
-      is_path_in_topology topology src current_flow.(Dest) path /\
-      contains_no_duplicates (src :: path) /\
-      match path with
-      | nil => False
-      | car :: _ => car = target
-      end.
+  Lemma all_pairs_paths_next_node_generator_creates_next_node_paths : forall paths topology policy current_flow hop_target,
+    all_pairs_paths_valid paths topology policy
+      -> policy current_flow = true
+      -> match paths hop_target current_flow.(Dest) with | Some _ => True | None => False end
+      -> exists path,
+        is_next_node_path (all_pairs_paths_next_node_generator paths topology policy) path hop_target current_flow.
+  Proof.
+    intros.
+    remember (paths hop_target current_flow.(Dest)) as x.
+    destruct x; try tauto.
+    remember (length l) as len.
+    clear H1.
+    assert (match paths hop_target current_flow.(Dest) with | Some p => length p <= len | _ => False end) by (rewrite <- Heqx; omega).
+    assert (len = 0 -> hop_target = current_flow.(Dest)) by (intros; subst; destruct l; simpl in H2; try omega; eapply paths_in_topology in H; rewrite <- Heqx in H; tauto).
+    clear Heqlen.
+    clear Heqx.
+    dependent induction len generalizing hop_target; try (exists nil; tauto).
+    clear H2.
+    remember (paths hop_target current_flow.(Dest)) as p.
+    destruct p; try tauto.
+    destruct l0; try (exists nil; simpl; eapply paths_in_topology in H; rewrite <- Heqp in H; simpl in H; subst; reflexivity).
+    assert (H' := H).
+    eapply paths_move_closer_to_destination in H; rewrite <- Heqp in H.
+    specialize (IHlen n).
+    destruct (paths n current_flow.(Dest)); try tauto.
+    simpl in H1.
+    assert (length l1 <= len) by omega.
+    apply IHlen in H2.
+    - destruct H2.
+      exists (n :: x).
+      simpl.
+      constructor; try assumption.
+      unfold all_pairs_paths_next_node_generator.
+      constructor; try assumption.
+      rewrite <- Heqp.
+      reflexivity.
+    - intros.
+      assert (length l0 = 0) by omega.
+      destruct l0; simpl in H4; try omega.
+      eapply paths_in_topology in H'.
+      rewrite <- Heqp in H'.
+      simpl in H'.
+      tauto.
+  Qed.
 
-  Lemma spanning_tree_next_node_generator'_valid : forall topology reduced_topology policy,
-    is_spanning_tree topology reduced_topology
-      -> next_node_valid reduced_topology policy (spanning_tree_next_node_generator' reduced_topology policy).
+  Fixpoint has_strictly_decreasing_distances (paths : all_pairs_paths) l dest bound :=
+    match l with
+    | nil => True
+    | node :: cdr =>
+      match paths node dest with
+      | Some l' => length l' < bound /\ has_strictly_decreasing_distances paths cdr dest (length l')
+      | None => False
+      end
+    end.
+
+  Lemma strictly_decreasing_distances_strengthening : forall paths l dest small_bound big_bound,
+    has_strictly_decreasing_distances paths l dest small_bound
+      -> small_bound <= big_bound
+      -> has_strictly_decreasing_distances paths l dest big_bound.
+  Proof.
+    intros.
+    destruct l; simpl; try tauto.
+    simpl in H.
+    destruct (paths n dest); try tauto.
+    destruct H.
+    constructor; try tauto; omega.
+  Qed.
+
+  Lemma all_pairs_paths_generate_strictly_decreasing_distances : forall (paths : all_pairs_paths) topology policy here current_flow path path',
+    all_pairs_paths_valid paths topology policy
+      -> paths here current_flow.(Dest) = Some path'
+      -> is_next_node_path (all_pairs_paths_next_node_generator paths topology policy) path here current_flow
+      -> has_strictly_decreasing_distances paths path current_flow.(Dest) (length path').
+  Proof.
+    intros.
+    dependent induction path generalizing here; try (simpl; tauto).
+    simpl.
+    simpl in H1.
+    destruct H1.
+    unfold all_pairs_paths_next_node_generator in H1.
+    destruct H1.
+    rewrite H0 in H3.
+    destruct path'; try tauto.
+    subst.
+    assert (H' := H).
+    eapply paths_move_closer_to_destination in H; rewrite H0 in H.
+    remember (paths n current_flow.(Dest)) as p.
+    apply eq_sym in Heqp.
+    destruct p; try tauto.
+    constructor; try (simpl; omega).
+    eapply IHpath; eassumption.
+  Qed.
+
+
+  Lemma decreasing_distances_implies_nonmember : forall (paths : all_pairs_paths) path dest node path',
+    paths node dest = Some path'
+      -> has_strictly_decreasing_distances paths path dest (length path')
+      -> ~In node path.
+  Proof.
+    intros.
+    dependent induction path; intros; simpl; try tauto.
+    simpl in H0.
+    remember (paths a dest) as l.
+    destruct l; try tauto.
+    destruct H0.
+    unfold not.
+    intros.
+    destruct H2.
+    - subst.
+      rewrite <- Heql in H.
+      injection H.
+      intros.
+      subst.
+      omega.
+    - assert (~(In node path)); try tauto.
+      assert (length l <= length path') by omega.
+      apply strictly_decreasing_distances_strengthening with (big_bound := length path') in H1; try assumption.
+      eapply IHpath; eassumption.
+  Qed.
+
+  Theorem all_pairs_paths_generator_valid : forall paths topology policy,
+    all_pairs_paths_valid paths topology policy
+      -> next_node_valid topology policy (all_pairs_paths_next_node_generator paths topology policy).
   Proof.
     intros.
     constructor; intros.
-    - unfold spanning_tree_next_node_generator' in H0.
+    - unfold all_pairs_paths_next_node_generator in H0.
       destruct H0.
-      destruct H1.
-      destruct H1.
-      destruct H2.
-      destruct x.
-      tauto.
+      apply paths_in_topology with (src := here) (dest := current_flow.(Dest)) in H.
+      destruct (paths here current_flow.(Dest)); try tauto.
+      destruct l; try tauto.
       subst.
-      simpl in H1.
-      destruct H1.
-      assumption.
-    - unfold iff.
-      constructor.
+      simpl in H.
+      tauto.
+    - constructor.
       + intros.
-        destruct flow0.
-        simpl.
-        apply is_tree with (src := Src0) (dest := Dest0) in H.
-        destruct H.
-        unfold unique in H.
-        apply proj1 in H.
-        destruct H.
-        exists x.
-        remember {| Src := Src0; Dest := Dest0 |} as current_flow.
-        assert (Dest0 = Dest current_flow) by (rewrite Heqcurrent_flow; reflexivity).
-        assert (x = nil -> Src0 = Dest current_flow) by (intros; subst; assumption).
-        clear Heqcurrent_flow.
-        dependent induction x generalizing Src0; try tauto.
-        subst.
-        simpl.
-        constructor.
-        * constructor; try assumption.
-          exists (cons a x).
-          tauto.
-        * simpl in H, H2.
-          apply IHx; simpl; try tauto.
-          intros.
-          subst.
-          tauto.
+        apply all_pairs_paths_next_node_generator_creates_next_node_paths; try assumption.
+        eapply paths_exist_for_valid_flows in H; eassumption.
       + intros.
         destruct H1.
-        destruct x; try tauto.
-        simpl in H1.
-        unfold spanning_tree_next_node_generator' in H1.
+        destruct x; simpl in H1; try tauto.
+        destruct H1.
+        unfold all_pairs_paths_next_node_generator in H1.
         tauto.
-    - apply is_tree with (src := src) (dest := current_flow.(Dest)) in H.
-      unfold spanning_tree_next_node_generator' in H0.
+    - unfold all_pairs_paths_next_node_generator in H0.
       destruct H0.
-      destruct H1.
-      destruct H1.
-      destruct H2.
-      destruct x; try tauto.
-      exists x.
-      destruct H.
-      destruct H.
-      destruct H.
-      clear H4.
+      apply all_pairs_paths_next_node_generator_creates_next_node_paths; try tauto.
+      remember (paths src current_flow.(Dest)) as p.
+      destruct p; try tauto.
+      destruct l; try tauto.
       subst.
-      simpl in H1.
-      destruct H1.
-      clear H1.
-      dependent induction x generalizing hop_target; try assumption.
+      eapply paths_move_closer_to_destination in H.
+      rewrite <- Heqp in H.
+      destruct (paths n current_flow.(Dest)); tauto.
+    - dependent induction path; try (simpl; tauto).
+      simpl in H0.
+      destruct H0.
+      unfold all_pairs_paths_next_node_generator in H0.
+      destruct H0.
+      remember (paths here current_flow.(Dest)) as p.
+      destruct p; try tauto.
+      destruct l; try tauto.
+      subst.
+      assert (H1' := H1).
+      apply IHpath in H1.
       simpl.
-      constructor.
-      + constructor; try assumption.
-        simpl in H2, H3.
-        exists (cons a x).
-        constructor; simpl; tauto.
-      + simpl in H2, H3.
-        apply IHx; simpl; tauto.
-    - apply is_tree with (src := node) (dest := node) in H.
-      destruct H.
-      assert (x = nil).
-      + unfold unique in H.
-        destruct H.
-        apply H1.
-        constructor.
-        * constructor.
-        * simpl.
-          tauto.
+      simpl in H1.
+      constructor; try tauto.
+      unfold not.
+      intros.
+      destruct H2.
       + subst.
+        eapply paths_move_closer_to_destination in H; repeat rewrite <- Heqp in H.
         simpl in H.
-        destruct path; try reflexivity.
-        exfalso.
-        simpl in H0.
-        destruct H0.
-        destruct H0.
-        destruct H2.
-        destruct H2.
-        destruct H3.
-        unfold unique in H.
-        destruct H.
-        assert (nil = x); subst; try tauto.
-        destruct x; try tauto.
-        subst.
-        simpl in H2, H3.
-        apply H5.
-        simpl.
-        tauto.
-  Qed.
-
-  Lemma next_node_subgraph_weakening : forall (sparse_topology dense_topology : network_topology) policy next,
-    next_node_valid sparse_topology policy next
-      -> (forall n1 n2, sparse_topology n1 n2 -> dense_topology n1 n2)
-      -> next_node_valid dense_topology policy next.
-  Proof.
-    intros.
-    destruct H.
-    constructor; eauto.
-  Qed.
-
-  Variable make_spanning_tree : network_topology -> network_topology.
-
-  Definition spanning_tree_generator_valid topology_filter := forall topology,
-    topology_filter topology -> is_spanning_tree topology (make_spanning_tree topology).
-
-  Definition spanning_tree_next_node_generator topology policy :=
-    spanning_tree_next_node_generator' (make_spanning_tree topology) policy.
-
-  Theorem spanning_tree_next_node_generator_valid (topology_filter : network_topology -> Prop) :
-    spanning_tree_generator_valid topology_filter
-      -> next_node_generator_valid spanning_tree_next_node_generator topology_filter.
-  Proof.
-    unfold next_node_generator_valid, spanning_tree_next_node_generator.
-    intros.
-    assert (H' := H0).
-    apply H in H0.
-    apply next_node_subgraph_weakening with (sparse_topology := make_spanning_tree topology).
-    - apply spanning_tree_next_node_generator'_valid with (topology := topology); eauto.
-    - apply is_subgraph; assumption.
+        omega.
+      + assert (~(In here path)); try tauto.
+        eapply decreasing_distances_implies_nonmember.
+        * apply eq_sym.
+          eassumption.
+        * assert (H' := H).
+          eapply paths_move_closer_to_destination in H.
+          rewrite <- Heqp in H.
+          remember (paths n current_flow.(Dest)) as p.
+          destruct p; try tauto.
+          apply strictly_decreasing_distances_strengthening with (small_bound := length l0); try (simpl; omega).
+          apply eq_sym in Heqp0.
+          eapply all_pairs_paths_generate_strictly_decreasing_distances; eassumption.
   Qed.
 End Node.
 
@@ -225,14 +297,16 @@ Section NetworkExample.
   | B
   | C
   | D
+  | E
+  | F
   .
 
   (*
     example_topology:
 
-        B
-      / | \
-     A  |  D
+        B ------> E
+      / | \       ↑
+     A  |  D <--- F
       \ | /
         C
   *)
@@ -242,114 +316,59 @@ Section NetworkExample.
     | (A, C) | (C, A) => True
     | (B, C) | (C, B) => True
     | (B, D) | (D, B) => True
+    | (B, E) => True
     | (C, D) | (D, C) => True
+    | (F, D) => True
+    | (F, E) => True
     | _ => False
     end.
 
-  (*
-    example_spanning_tree:
-
-        B
-      /   \
-     A     D
-      \
-        C
-  *)
-
-  Local Definition example_spanning_tree n1 n2 :=
+  Local Definition example_all_pairs_paths n1 n2 :=
     match (n1, n2) with
-    | (A, B) | (B, A) => True
-    | (A, C) | (C, A) => True
-    | (B, D) | (D, B) => True
-    | _ => False
+    | (A, A) | (B, B) | (C, C) | (D, D) | (E, E) | (F, F) => Some nil
+    | (A, B) => Some (C :: B :: nil)
+    | (A, C) => Some (C :: nil)
+    | (A, D) => Some (B :: D :: nil)
+    | (A, E) => Some (B :: E :: nil)
+    | (A, F) => None
+    | (B, A) => Some (A :: nil)
+    | (B, C) => Some (C :: nil)
+    | (B, D) => Some (D :: nil)
+    | (B, E) => Some (E :: nil)
+    | (B, F) => None
+    | (C, A) => Some (A :: nil)
+    | (C, B) => Some (B :: nil)
+    | (C, D) => Some (D :: nil)
+    | (C, E) => Some (A :: B :: E :: nil)
+    | (C, F) => None
+    | (D, A) => Some (C :: A :: nil)
+    | (D, B) => Some (B :: nil)
+    | (D, C) => Some (C :: nil)
+    | (D, E) => Some (B :: E :: nil)
+    | (D, F) => None
+    | (E, _) => None
+    | (F, A) => Some (D :: B :: A :: nil)
+    | (F, B) => Some (D :: B :: nil)
+    | (F, C) => Some (D :: C :: nil)
+    | (F, D) => Some (D :: nil)
+
+    (* circuitous route which won't actually get followed because D will route to B *)
+    | (F, E) => Some (D :: C :: A :: B :: E :: nil)
     end.
 
-  Local Definition make_example_spanning_tree (_ : network_topology ExampleVertex) := example_spanning_tree.
-
-  Lemma long_paths_have_duplicates : forall (path : list ExampleVertex),
-    length path < 5 \/ ~contains_no_duplicates path.
+  Local Theorem validity : forall (policy : network_policy ExampleVertex),
+    (forall n1 n2, policy {| Src := n1; Dest := n2 |} = true -> example_all_pairs_paths n1 n2 <> None)
+      -> next_node_valid ExampleVertex example_topology policy
+        (all_pairs_paths_next_node_generator ExampleVertex example_all_pairs_paths example_topology policy).
   Proof.
     intros.
-    destruct path.
-    apply or_introl; simpl; omega.
-    destruct path.
-    apply or_introl; simpl; omega.
-    destruct path.
-    apply or_introl; simpl; omega.
-    destruct path.
-    apply or_introl; simpl; omega.
-    destruct path.
-    apply or_introl; simpl; omega.
-    apply or_intror.
-    unfold contains_no_duplicates.
-    unfold not.
-    intros.
-    simpl in H.
-    destruct e, e0, e1, e2, e3; tauto.
-  Qed.
-
-  Definition get_example_path n1 n2 :=
-    match (n1, n2) with
-    | (A, A) | (B, B) | (C, C) | (D, D) => nil
-    | (A, B) | (D, B) => cons B nil
-    | (C, B) => cons A (cons B nil)
-    | (B, A) | (C, A) => cons A nil
-    | (D, A) => cons B (cons A nil)
-    | (A, C) => cons C nil
-    | (B, C) => cons A (cons C nil)
-    | (D, C) => cons B (cons A (cons C nil))
-    | (B, D) => cons D nil
-    | (A, D) => cons B (cons D nil)
-    | (C, D) => cons A (cons B (cons D nil))
-    end.
-
-  Lemma negation_distribution : forall (P1 P2 : Prop), ~(P1 \/ P2) -> ~P1 /\ ~P2.
-  Proof.
-    tauto.
-  Qed.
-
-  Local Theorem validity : forall policy,
-    next_node_valid ExampleVertex example_topology policy
-      (spanning_tree_next_node_generator ExampleVertex make_example_spanning_tree example_topology policy).
-  Proof.
-    assert (next_node_generator_valid ExampleVertex (spanning_tree_next_node_generator ExampleVertex make_example_spanning_tree) (fun t => t = example_topology)); try eauto.
-    apply spanning_tree_next_node_generator_valid.
-    unfold spanning_tree_generator_valid.
-    intros.
-    unfold make_example_spanning_tree.
-    subst.
-    constructor.
-    - intros; destruct n1, n2; try constructor; inversion H.
-    - intros.
-      unfold unique.
-      exists (get_example_path src dest).
-      apply conj; try apply conj.
-      + unfold example_spanning_tree.
-        destruct src, dest; simpl; tauto.
-      + destruct src, dest; simpl; repeat match goal with
-        | [ H : _ \/ _ |- _ ] => destruct H
-        | [ |- _ /\ _ ] => constructor
-        | [ |- ~_ ] => unfold not; intros
-        | _ => tauto
-        end; discriminate.
-      + intros.
-        destruct H.
-        assert (length x' < 5 \/ ~contains_no_duplicates x') by (apply long_paths_have_duplicates).
-        simpl in H0.
-        destruct H1; try tauto.
-        unfold get_example_path.
-        unfold is_path_in_topology, example_spanning_tree in H.
-        destruct src, dest; repeat match goal with
-        | _ => reflexivity
-        | _ => discriminate
-        | [ H : _ /\ _ |- _ ] => destruct H
-        | [ H : ~(_ \/ _) |- _ ] => apply negation_distribution in H
-        | [ e : ExampleVertex |- _ ] => destruct e; try tauto
-        | [ H : length (_ :: _ :: _ :: _ :: _ :: _) < 5 |- _ ] => simpl in H; omega
-        | [ H : contains_no_duplicates (_ :: _) |- _ ] => simpl in H
-        | [ H : ~In _ (_ :: _) |- _ ] => simpl in H
-        | [ x' : list ExampleVertex |- _ ] => destruct x'
-        | _ => tauto
-        end.
+    apply all_pairs_paths_generator_valid.
+    constructor; intros.
+    - destruct src, dest; unfold example_topology; simpl; tauto.
+    - destruct current_flow.
+      simpl.
+      apply H in H0.
+      destruct (example_all_pairs_paths Src0 Dest0); tauto.
+    - destruct src, dest; simpl; try omega; tauto.
   Qed.
 End NetworkExample.
