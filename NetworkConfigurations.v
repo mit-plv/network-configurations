@@ -47,6 +47,11 @@ Section Node.
       is_next_node_path next path here current_flow -> contains_no_duplicates (here :: path)
   }.
 
+  Definition dec_next_node := Node -> flow -> option Node.
+
+  Definition dec_next_node_valid (topology : network_topology) (policy : network_policy) (dec_next : dec_next_node) :=
+    next_node_valid topology policy (fun here current_flow hop_target => dec_next here current_flow = Some hop_target).
+
   Fixpoint is_path_in_topology (topology : network_topology) src dest path :=
     match path with
     | nil => src = dest
@@ -54,11 +59,6 @@ Section Node.
       topology src hop_target /\
       is_path_in_topology topology hop_target dest cdr
     end.
-
-  Definition next_node_generator := network_topology -> network_policy -> next_node.
-
-  Definition next_node_generator_valid (generator : next_node_generator) := forall topology policy,
-    next_node_valid topology policy (generator topology policy).
 
   Definition all_pairs_paths := Node -> Node -> option (list Node).
 
@@ -352,6 +352,86 @@ Section Node.
           apply eq_sym in Heqp0.
           eapply all_pairs_paths_generate_strictly_decreasing_costs; eassumption.
   Qed.
+
+  Definition all_pairs_paths_dec_next_node_generator
+    (paths : all_pairs_paths)
+    (topology : network_topology)
+    (policy : network_policy)
+    here
+    current_flow
+  :=
+    if policy current_flow then
+      match paths here current_flow.(Dest) with
+      | Some (hop_target :: _) => Some hop_target
+      | _ => None
+      end
+    else None.
+
+  Lemma is_next_node_path_weakening : forall (strict_next lenient_next : next_node) path here current_flow,
+    is_next_node_path strict_next path here current_flow
+      -> (forall here' current_flow' hop_target, strict_next here' current_flow' hop_target -> lenient_next here' current_flow' hop_target)
+      -> is_next_node_path lenient_next path here current_flow.
+  Proof.
+    intros.
+    dependent induction path; simpl; simpl in H; try assumption.
+    destruct H.
+    assert (H0' := H0).
+    apply IHpath with (here := a) (current_flow := current_flow) in H0; try tauto.
+    constructor; try tauto.
+    apply H0'; assumption.
+  Qed.
+
+  Lemma next_node_extensionality : forall next1 next2 topology policy,
+    (forall here current_flow hop_target, next1 here current_flow hop_target <-> next2 here current_flow hop_target)
+      -> next_node_valid topology policy next1
+      -> next_node_valid topology policy next2.
+  Proof.
+    intros.
+    constructor; intros; destruct H0.
+    - eapply all_hops_in_topology0.
+      apply H.
+      eassumption.
+    - constructor; intros.
+      + apply path_exists_only_for_valid_flows0 in H0; try assumption.
+        destruct H0.
+        exists x.
+        eapply is_next_node_path_weakening; try eassumption; apply H.
+      + apply path_exists_only_for_valid_flows0 in H1.
+        destruct H1.
+        apply H2.
+        destruct H0.
+        exists x.
+        eapply is_next_node_path_weakening; try eassumption; apply H.
+    - apply H in H1.
+      apply no_black_holes0 in H1.
+      destruct H1.
+      exists x.
+      eapply is_next_node_path_weakening; try eassumption; apply H.
+    - eapply is_next_node_path_weakening in H1; try apply H.
+      apply all_paths_acyclic0 in H1.
+      assumption.
+  Qed.
+
+
+
+  Theorem all_pairs_paths_dec_generator_valid : forall paths topology policy,
+    all_pairs_paths_valid paths topology policy
+      -> dec_next_node_valid topology policy (all_pairs_paths_dec_next_node_generator paths topology policy).
+  Proof.
+    intros.
+    apply all_pairs_paths_generator_valid in H.
+    eapply next_node_extensionality; try eassumption.
+    unfold all_pairs_paths_next_node_generator, all_pairs_paths_dec_next_node_generator.
+    constructor; intros; repeat match goal with
+    | [ H : _ /\ _ |- _ ] => destruct H
+    | [ _ : _ |- _ /\ _ ] => constructor
+    | [ H : context[match ?x with _ => _ end] |- _ ] => destruct x
+    | [ H : ?x = _ |- context[?x] ] => rewrite H
+    | [ H : _ ?a = _ ?b |- ?b = ?a ] => injection H; apply eq_sym
+    | _ => tauto
+    | _ => discriminate
+    end.
+  Qed.
 End Node.
 
 Require Import ZArith.
@@ -432,13 +512,14 @@ Section NetworkExample.
     | _ => 1
     end.
 
-  Local Theorem validity : forall (policy : network_policy ExampleVertex),
-    (forall n1 n2, policy {| Src := n1; Dest := n2 |} = true -> example_all_pairs_paths n1 n2 <> None)
-      -> next_node_valid ExampleVertex example_topology policy
-        (all_pairs_paths_next_node_generator ExampleVertex example_all_pairs_paths example_topology policy).
+  Definition policy_satisfiable (policy : network_policy ExampleVertex) := forall n1 n2,
+    policy {| Src := n1; Dest := n2 |} = true -> example_all_pairs_paths n1 n2 <> None.
+
+  Local Lemma paths_valid : forall policy,
+    policy_satisfiable policy
+      -> all_pairs_paths_valid ExampleVertex example_all_pairs_paths example_topology policy.
   Proof.
     intros.
-    apply all_pairs_paths_generator_valid.
     constructor; intros.
     - destruct src, dest; unfold example_topology; simpl; tauto.
     - destruct current_flow.
@@ -450,4 +531,24 @@ Section NetworkExample.
       intros.
       destruct src, dest; simpl; try omega; tauto.
   Qed.
+
+  Local Theorem validity : forall policy,
+    policy_satisfiable policy
+      -> next_node_valid ExampleVertex example_topology policy
+        (all_pairs_paths_next_node_generator ExampleVertex example_all_pairs_paths example_topology policy).
+  Proof.
+    intros.
+    apply all_pairs_paths_generator_valid.
+    apply paths_valid; assumption.
+  Qed.
+
+  Local Theorem dec_validity : forall policy,
+    policy_satisfiable policy
+      -> dec_next_node_valid ExampleVertex example_topology policy
+        (all_pairs_paths_dec_next_node_generator ExampleVertex example_all_pairs_paths example_topology policy).
+    Proof.
+      intros.
+      apply all_pairs_paths_dec_generator_valid.
+      apply paths_valid; assumption.
+    Qed.
 End NetworkExample.
