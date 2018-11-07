@@ -19,16 +19,16 @@ Section Node.
 
   Fixpoint is_next_node_path (next : next_node) path here current_flow :=
     match path with
-    | nil => here = current_flow.(Dest)
-    | cons hop_target cdr =>
+    | [] => here = current_flow.(Dest)
+    | hop_target :: cdr =>
         next here current_flow hop_target /\
         is_next_node_path next cdr hop_target current_flow
     end.
 
   Fixpoint contains_no_duplicates {A} (l : list A) :=
     match l with
-    | nil => True
-    | cons car cdr => ~In car cdr /\ contains_no_duplicates cdr
+    | [] => True
+    | car :: cdr => ~In car cdr /\ contains_no_duplicates cdr
     end.
 
   Record next_node_valid (topology : network_topology) (policy : network_policy) (next : next_node) := {
@@ -55,8 +55,8 @@ Section Node.
 
   Fixpoint is_path_in_topology (topology : network_topology) src dest path :=
     match path with
-    | nil => src = dest
-    | cons hop_target cdr =>
+    | [] => src = dest
+    | hop_target :: cdr =>
       topology src hop_target /\
       is_path_in_topology topology hop_target dest cdr
     end.
@@ -88,7 +88,7 @@ Section Node.
 
   Fixpoint path_cost (costs : edge_costs) src path :=
     match path with
-    | nil => 0
+    | [] => 0
     | car :: cdr => costs src car + path_cost costs car cdr
     end.
 
@@ -160,11 +160,11 @@ Section Node.
         omega.
     - clear Heqcost.
       clear Heqx.
-      dependent induction cost generalizing hop_target; try (exists nil; tauto).
+      dependent induction cost generalizing hop_target; try (exists []; tauto).
       clear H4.
       remember (paths hop_target current_flow.(Dest)) as p.
       destruct p; try tauto.
-      destruct l0; try (exists nil; simpl; eapply paths_in_topology in H; rewrite <- Heqp in H; simpl in H; subst; reflexivity).
+      destruct l0; try (exists []; simpl; eapply paths_in_topology in H; rewrite <- Heqp in H; simpl in H; subst; reflexivity).
       specialize (H2 hop_target).
       specialize (H2 current_flow.(Dest)).
       rewrite <- Heqp in H2.
@@ -196,7 +196,7 @@ Section Node.
 
   Fixpoint has_strictly_decreasing_costs (paths : all_pairs_paths) (costs : edge_costs) l dest bound :=
     match l with
-    | nil => True
+    | [] => True
     | node :: cdr =>
       match paths node dest with
       | Some l' => path_cost costs node l' < bound /\ has_strictly_decreasing_costs paths costs cdr dest (path_cost costs node l')
@@ -462,20 +462,20 @@ Section Node.
 
   Fixpoint all_distinct_pairs {A} (sequence : list A) :=
     match sequence with
-    | nil => nil
+    | [] => []
     | (car :: cdr) => (car, car) :: map (fun n => (car, n)) cdr ++ map (fun n => (n, car)) cdr ++ all_distinct_pairs cdr
     end.
 
   (* Sanity check until exhaustive_routing_tables_generator_valid is proven below *)
-  Lemma all_distinct_pairs_test : all_distinct_pairs (1 :: 2 :: 3 :: nil)
-    = (1, 1) :: (1, 2) :: (1, 3) :: (2, 1) :: (3, 1) :: (2, 2) :: (2, 3) :: (3, 2) :: (3, 3) :: nil.
+  Lemma all_distinct_pairs_test : all_distinct_pairs [1; 2; 3]
+    = [(1, 1); (1, 2); (1, 3); (2, 1); (3, 1); (2, 2); (2, 3); (3, 2); (3, 3)].
   Proof.
     reflexivity.
   Qed.
 
   Fixpoint map_filter {A} {B} (mapper : A -> option B) (l : list A) :=
     match l with
-    | nil => nil
+    | [] => []
     | car :: cdr =>
       match mapper car with
       | Some car' => car' :: map_filter mapper cdr
@@ -522,7 +522,7 @@ Ltac enumerate_finite_set Node :=
         simpl;
         tauto
   );
-  exact nil.
+  exact [].
 
 
 Require Import ZArith.
@@ -546,49 +546,49 @@ Section NetworkExample.
         C
   *)
   Local Definition example_topology n1 n2 :=
-    match (n1, n2) with
-    | (A, B) | (B, A) => True
-    | (A, C) | (C, A) => True
-    | (B, C) | (C, B) => True
-    | (B, D) | (D, B) => True
-    | (B, E) => True
-    | (C, D) | (D, C) => True
-    | (F, D) => True
-    | (F, E) => True
-    | _ => False
+    match n1, n2 with
+    | A, B | B, A => True
+    | A, C | C, A => True
+    | B, C | C, B => True
+    | B, D | D, B => True
+    | B, E => True
+    | C, D | D, C => True
+    | F, D => True
+    | F, E => True
+    | _, _ => False
     end.
 
   Local Definition example_all_pairs_paths n1 n2 :=
-    match (n1, n2) with
-    | (A, A) | (B, B) | (C, C) | (D, D) | (E, E) | (F, F) => Some nil
-    | (A, B) => Some (C :: B :: nil)
-    | (A, C) => Some (C :: nil)
-    | (A, D) => Some (B :: D :: nil)
-    | (A, E) => Some (B :: E :: nil)
-    | (A, F) => None
-    | (B, A) => Some (A :: nil)
-    | (B, C) => Some (C :: nil)
-    | (B, D) => Some (D :: nil)
-    | (B, E) => Some (E :: nil)
-    | (B, F) => None
-    | (C, A) => Some (A :: nil)
-    | (C, B) => Some (B :: nil)
-    | (C, D) => Some (D :: nil)
-    | (C, E) => Some (A :: B :: E :: nil)
-    | (C, F) => None
-    | (D, A) => Some (C :: A :: nil)
-    | (D, B) => Some (B :: nil)
-    | (D, C) => Some (C :: nil)
-    | (D, E) => Some (C :: A :: B :: E :: nil)
-    | (D, F) => None
-    | (E, _) => None
-    | (F, A) => Some (D :: B :: A :: nil)
-    | (F, B) => Some (D :: B :: nil)
-    | (F, C) => Some (D :: C :: nil)
-    | (F, D) => Some (D :: nil)
+    match n1, n2 with
+    | A, A | B, B | C, C | D, D | E, E | F, F => Some []
+    | A, B => Some [C; B]
+    | A, C => Some [C]
+    | A, D => Some [B; D]
+    | A, E => Some [B; E]
+    | A, F => None
+    | B, A => Some [A]
+    | B, C => Some [C]
+    | B, D => Some [D]
+    | B, E => Some [E]
+    | B, F => None
+    | C, A => Some [A]
+    | C, B => Some [B]
+    | C, D => Some [D]
+    | C, E => Some [A; B; E]
+    | C, F => None
+    | D, A => Some [C; A]
+    | D, B => Some [B]
+    | D, C => Some [C]
+    | D, E => Some [C; A; B; E]
+    | D, F => None
+    | E, _ => None
+    | F, A => Some [D; B; A]
+    | F, B => Some [D; B]
+    | F, C => Some [D; C]
+    | F, D => Some [D]
 
     (* a route which won't actually get followed because D will reroute *)
-    | (F, E) => Some (D :: C :: B :: E :: nil)
+    | F, E => Some [D; C; B; E]
     end.
 
   (* Giving all edges a cost of 1 would not satisfy the decreasing-costs
@@ -598,9 +598,9 @@ Section NetworkExample.
   has a large cost, then the total cost of [C; A; B; E] is less
   than the cost of [D; C; B; E]. *)
   Definition example_costs n1 n2 :=
-    match (n1, n2) with
-    | (C, B) => 5
-    | _ => 1
+    match n1, n2 with
+    | C, B => 5
+    | _, _ => 1
     end.
 
   Definition policy_satisfiable (policy : network_policy ExampleVertex) := forall n1 n2,
