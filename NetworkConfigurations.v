@@ -1,4 +1,5 @@
 Require Import Coq.Lists.List.
+Import ListNotations.
 Require Import Coq.Program.Equality.
 Require Import ZArith.
 
@@ -412,8 +413,6 @@ Section Node.
       assumption.
   Qed.
 
-
-
   Theorem all_pairs_paths_dec_generator_valid : forall paths topology policy,
     all_pairs_paths_valid paths topology policy
       -> dec_next_node_valid topology policy (all_pairs_paths_dec_next_node_generator paths topology policy).
@@ -432,7 +431,99 @@ Section Node.
     | _ => discriminate
     end.
   Qed.
+
+  Definition routing_tables := Node -> list (flow * Node).
+
+  Record routing_tables_valid (tables : routing_tables) (dec_next : dec_next_node) := {
+    no_duplicate_entries : forall here,
+      contains_no_duplicates (tables here);
+
+    (* FIXME: the constraint below might be unnecessary/overly restrictive in practice. *)
+    no_conflicting_entries : forall here current_flow target1 target2,
+      In (current_flow, target1) (tables here)
+        -> In (current_flow, target2) (tables here)
+        -> target1 = target2;
+
+    entries_match_next_node_result : forall here current_flow hop_target,
+      dec_next here current_flow = Some hop_target
+        <-> In (current_flow, hop_target) (tables here)
+  }.
+
+  Definition routing_tables_generator := dec_next_node -> list Node -> routing_tables.
+
+  Definition valid_node_enumeration (all_nodes : list Node) := forall node, In node all_nodes.
+
+  Definition routing_tables_generator_valid (generator : routing_tables_generator) := forall dec_next all_nodes,
+    valid_node_enumeration all_nodes
+      -> contains_no_duplicates all_nodes
+      -> routing_tables_valid
+        (generator dec_next all_nodes)
+        dec_next.
+
+  Fixpoint all_distinct_pairs {A} (sequence : list A) :=
+    match sequence with
+    | nil => nil
+    | (car :: cdr) => (car, car) :: map (fun n => (car, n)) cdr ++ map (fun n => (n, car)) cdr ++ all_distinct_pairs cdr
+    end.
+
+  (* Sanity check until exhaustive_routing_tables_generator_valid is proven below *)
+  Lemma all_distinct_pairs_test : all_distinct_pairs (1 :: 2 :: 3 :: nil)
+    = (1, 1) :: (1, 2) :: (1, 3) :: (2, 1) :: (3, 1) :: (2, 2) :: (2, 3) :: (3, 2) :: (3, 3) :: nil.
+  Proof.
+    reflexivity.
+  Qed.
+
+  Fixpoint map_filter {A} {B} (mapper : A -> option B) (l : list A) :=
+    match l with
+    | nil => nil
+    | car :: cdr =>
+      match mapper car with
+      | Some car' => car' :: map_filter mapper cdr
+      | None => map_filter mapper cdr
+      end
+    end.
+
+  Definition fst {A} {B} (pair : A * B) := match pair with | (l, _) => l end.
+  Definition snd {A} {B} (pair : A * B) := match pair with | (_, r) => r end.
+
+  Definition exhaustive_routing_tables_generator (dec_next : dec_next_node) (all_nodes : list Node) (here : Node) :=
+    map_filter (fun pair =>
+      match dec_next here {| Src := fst pair; Dest := snd pair |} with
+      | Some hop_target => Some ({| Src := fst pair; Dest := snd pair |}, hop_target)
+      | None => None
+      end
+    ) (all_distinct_pairs all_nodes).
+
+  Theorem exhaustive_routing_tables_generator_valid : routing_tables_generator_valid exhaustive_routing_tables_generator.
+  Proof.
+    (* TODO *)
+  Abort.
 End Node.
+
+Ltac enumerate_finite_set Node :=
+  match goal with
+  | [ |- {l : list Node | valid_node_enumeration Node l} ] => idtac
+  | _ => fail 1
+  end;
+  econstructor;
+  unfold valid_node_enumeration;
+  intros;
+  match goal with
+  | [ node : Node |- _ ] => destruct node
+  end;
+  unshelve (
+    let cdr := fresh "cdr" in
+      evar (cdr : list Node);
+      let cdr' := eval unfold cdr in cdr in
+        clear cdr;
+        match goal with
+        | [ |- In ?n _ ] => instantiate (1 := n :: cdr')
+        end;
+        simpl;
+        tauto
+  );
+  exact nil.
+
 
 Require Import ZArith.
 Section NetworkExample.
@@ -551,4 +642,48 @@ Section NetworkExample.
       apply all_pairs_paths_dec_generator_valid.
       apply paths_valid; assumption.
     Qed.
+
+  Local Definition example_policy current_flow :=
+    match Src ExampleVertex current_flow, Dest ExampleVertex current_flow with
+    | A, _ | _, A | F, _ | _, F => true
+    | _, _ => false
+    end.
+
+  Definition example_dec_next_node := all_pairs_paths_dec_next_node_generator ExampleVertex example_all_pairs_paths example_topology example_policy.
+
+  Local Definition example_enumeration: {l : list ExampleVertex | valid_node_enumeration ExampleVertex l} :=
+    ltac:(enumerate_finite_set ExampleVertex).
+
+  Local Definition example_routing_tables := exhaustive_routing_tables_generator ExampleVertex example_dec_next_node (proj1_sig example_enumeration).
+
+  Definition concrete_routing_tables := map (fun n => (n, example_routing_tables n)) (proj1_sig example_enumeration).
+
+  Compute concrete_routing_tables.
+
+  (* Note: this proof takes a very long time. It's probably worth proving the general
+    case of validity here rather than using brute force per-example. *)
+  Local Theorem example_routing_tables_valid : routing_tables_valid ExampleVertex example_routing_tables example_dec_next_node.
+  Proof.
+    constructor; intros.
+    - destruct here; simpl; try tauto; repeat match goal with
+      | [ |- _ /\ _ ] => constructor
+      | [ |- ~_ ] => unfold not; intros
+      | [ H : _ \/ _ |- _ ] => destruct H
+      | _ => tauto
+      | _ => discriminate
+      end.
+    - destruct here, target1, target2; simpl in H, H0; repeat match goal with
+      | [ |- ?n = ?n ] => reflexivity
+      | [ H : _ \/ _ |- _ ] => destruct H
+      | [ H : False |- _ ] => destruct H
+      | [ H : (_, _) = (_, _) |- _ ] => injection H; intros; subst; discriminate
+      end.
+    - unfold example_dec_next_node, all_pairs_paths_dec_next_node_generator.
+      destruct current_flow, here, Src0, Dest0, hop_target; simpl; constructor; intros; try discriminate; repeat match goal with
+      | [ H : _ \/ _ |- _ ] => destruct H
+      | [ H : False |- _ ] => destruct H
+      | _ => discriminate
+      | _ => tauto
+      end.
+  Qed.
 End NetworkExample.
