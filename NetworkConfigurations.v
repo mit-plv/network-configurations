@@ -439,12 +439,6 @@ Section Node.
     no_duplicate_entries : forall here,
       NoDup (tables here);
 
-    (* FIXME: the constraint below might be unnecessary/overly restrictive in practice. *)
-    no_conflicting_entries : forall here current_flow target1 target2,
-      In (current_flow, target1) (tables here)
-        -> In (current_flow, target2) (tables here)
-        -> target1 = target2;
-
     entries_match_next_node_result : forall here current_flow hop_target,
       dec_next here current_flow = Some hop_target
         <-> In (current_flow, hop_target) (tables here)
@@ -461,19 +455,6 @@ Section Node.
         (generator dec_next all_nodes)
         dec_next.
 
-  Fixpoint all_distinct_pairs {A} (sequence : list A) :=
-    match sequence with
-    | [] => []
-    | (car :: cdr) => (car, car) :: map (fun n => (car, n)) cdr ++ map (fun n => (n, car)) cdr ++ all_distinct_pairs cdr
-    end.
-
-  (* Sanity check until exhaustive_routing_tables_generator_valid is proven below *)
-  Lemma all_distinct_pairs_test : all_distinct_pairs [1; 2; 3]
-    = [(1, 1); (1, 2); (1, 3); (2, 1); (3, 1); (2, 2); (2, 3); (3, 2); (3, 3)].
-  Proof.
-    reflexivity.
-  Qed.
-
   Fixpoint map_filter {A} {B} (mapper : A -> option B) (l : list A) :=
     match l with
     | [] => []
@@ -484,8 +465,66 @@ Section Node.
       end
     end.
 
+  Lemma map_filter_in_preservation : forall A B mapper l (element : A) (result : B),
+    (forall (x y : A), {x = y} + {x <> y})
+      -> mapper element = Some result
+      -> In element l
+      -> In result (map_filter mapper l).
+  Proof.
+    intros.
+    dependent induction l; try (simpl in H0; tauto).
+    assert ({a = element} + {a <> element}) by apply X.
+    destruct H1.
+    - subst.
+      simpl.
+      rewrite H.
+      constructor.
+      reflexivity.
+    - simpl.
+      assert (In result (map_filter mapper l)).
+      + simpl in H0.
+        destruct H0; try tauto.
+        eapply IHl; eassumption.
+      + destruct (mapper a); simpl; tauto.
+  Qed.
+
+  Lemma map_filter_in_filtering : forall A B mapper l (result : B),
+    (forall (x y : B), {x = y} + {x <> y})
+      -> In result (map_filter mapper l)
+      -> {element : A | mapper element = Some result}.
+  Proof.
+    intros.
+    dependent induction l; try (simpl in H; tauto).
+    simpl in H.
+    remember (mapper a) as mapped_a.
+    destruct mapped_a.
+    - assert ({b = result} + {b <> result}) by apply X.
+      destruct H0.
+      + subst.
+        apply exist with (x := a).
+        apply eq_sym.
+        assumption.
+      + simpl in H.
+        apply IHl; try assumption.
+        destruct H; tauto.
+    - apply IHl; assumption.
+  Qed.
+
   Definition fst {A} {B} (pair : A * B) := match pair with | (l, _) => l end.
   Definition snd {A} {B} (pair : A * B) := match pair with | (_, r) => r end.
+
+  Hypothesis Node_eq_dec : forall x y : Node, {x = y} + {x <> y}.
+  Definition Node_pair_eq_dec : forall x y : (Node * Node), {x = y} + {x <> y}.
+  Proof.
+    intros.
+    destruct x, y, Node_eq_dec with (x := n) (y := n1), Node_eq_dec with (x := n0) (y := n2); subst; try (constructor 1; reflexivity); constructor 2; unfold not; intros; injection H; tauto.
+  Defined.
+
+  Definition flow_Node_pair_eq_dec : forall x y : (flow * Node), {x = y} + {x <> y}.
+  Proof.
+    intros.
+    destruct x, y, f, f0, Node_eq_dec with (x := Src0) (y := Src1), Node_eq_dec with (x := Dest0) (y := Dest1), Node_eq_dec with (x := n) (y := n0); subst; try (constructor 1; reflexivity); constructor 2; unfold not; intros; injection H; tauto.
+  Defined.
 
   Definition exhaustive_routing_tables_generator (dec_next : dec_next_node) (all_nodes : list Node) (here : Node) :=
     map_filter (fun pair =>
@@ -493,12 +532,70 @@ Section Node.
       | Some hop_target => Some ({| Src := fst pair; Dest := snd pair |}, hop_target)
       | None => None
       end
-    ) (all_distinct_pairs all_nodes).
+    ) (nodup Node_pair_eq_dec (list_prod all_nodes all_nodes)).
 
   Theorem exhaustive_routing_tables_generator_valid : routing_tables_generator_valid exhaustive_routing_tables_generator.
   Proof.
-    (* TODO *)
-  Abort.
+    unfold exhaustive_routing_tables_generator.
+    constructor; intros.
+    - remember (nodup Node_pair_eq_dec (list_prod all_nodes all_nodes)) as pairs.
+      assert (NoDup pairs) by (subst; apply NoDup_nodup).
+      clear H.
+      clear Heqpairs.
+      dependent induction pairs; try apply NoDup_nil.
+      simpl.
+      inversion H1; clear H1; subst.
+      destruct a; simpl.
+      destruct (dec_next here {| Src := n; Dest := n0 |}); try (apply IHpairs; assumption).
+      constructor; try (apply IHpairs; assumption).
+      clear IHpairs.
+      dependent induction pairs; try (simpl; tauto).
+      inversion H4; clear H4; subst.
+      simpl.
+      destruct (dec_next here {| Src := fst a; Dest := snd a |}).
+      + simpl.
+        unfold not.
+        intros.
+        destruct a; simpl in H.
+        destruct H.
+        * injection H.
+          intros.
+          subst.
+          apply H3.
+          simpl.
+          tauto.
+        * apply IHpairs in H; try assumption.
+          simpl in H3.
+          tauto.
+      + simpl in H3.
+        apply IHpairs; tauto.
+    - constructor; intros.
+      + apply map_filter_in_preservation with (element := (current_flow.(Src), current_flow.(Dest))).
+        * apply Node_pair_eq_dec.
+        * destruct current_flow.
+          simpl.
+          rewrite H1.
+          reflexivity.
+        * apply nodup_In; apply in_prod; apply H.
+      + apply map_filter_in_filtering in H1; try apply flow_Node_pair_eq_dec.
+        destruct H1.
+        assert (x = (current_flow.(Src), current_flow.(Dest))).
+        * destruct (dec_next here {| Src := fst x; Dest := snd x |}); try discriminate.
+          injection e.
+          intros.
+          subst.
+          destruct x.
+          simpl.
+          reflexivity.
+        * subst.
+          destruct current_flow.
+          simpl in e.
+          destruct (dec_next here {| Src := Src0; Dest := Dest0 |}); try discriminate.
+          injection e.
+          intros.
+          subst.
+          reflexivity.
+  Qed.
 End Node.
 
 Ltac enumerate_finite_set Node :=
@@ -655,36 +752,21 @@ Section NetworkExample.
   Local Definition example_enumeration: {l : list ExampleVertex | valid_node_enumeration ExampleVertex l} :=
     ltac:(enumerate_finite_set ExampleVertex).
 
-  Local Definition example_routing_tables := exhaustive_routing_tables_generator ExampleVertex example_dec_next_node (proj1_sig example_enumeration).
+  Local Definition ExampleVertex_eq_dec : forall (n1 n2 : ExampleVertex), {n1 = n2} + {n1 <> n2}.
+  Proof.
+    intros; destruct n1, n2; firstorder discriminate.
+  Defined.
+
+  Local Definition example_routing_tables := exhaustive_routing_tables_generator ExampleVertex ExampleVertex_eq_dec example_dec_next_node (proj1_sig example_enumeration).
+
+  Local Theorem example_routing_tables_valid : routing_tables_valid ExampleVertex example_routing_tables example_dec_next_node.
+  Proof.
+    apply exhaustive_routing_tables_generator_valid.
+    - exact (proj2_sig example_enumeration).
+    - repeat constructor; firstorder discriminate.
+  Qed.
 
   Definition concrete_routing_tables := map (fun n => (n, example_routing_tables n)) (proj1_sig example_enumeration).
 
   Compute concrete_routing_tables.
-
-  (* Note: this proof takes a very long time. It's probably worth proving the general
-    case of validity here rather than using brute force per-example. *)
-  Local Theorem example_routing_tables_valid : routing_tables_valid ExampleVertex example_routing_tables example_dec_next_node.
-  Proof.
-    constructor; intros.
-    - destruct here; simpl; try tauto; repeat match goal with
-      | [ |- _ /\ _ ] => constructor
-      | [ |- ~_ ] => unfold not; intros
-      | [ H : _ \/ _ |- _ ] => destruct H
-      | _ => tauto
-      | _ => discriminate
-      end.
-    - destruct here, target1, target2; simpl in H, H0; repeat match goal with
-      | [ |- ?n = ?n ] => reflexivity
-      | [ H : _ \/ _ |- _ ] => destruct H
-      | [ H : False |- _ ] => destruct H
-      | [ H : (_, _) = (_, _) |- _ ] => injection H; intros; subst; discriminate
-      end.
-    - unfold example_dec_next_node, all_pairs_paths_dec_next_node_generator.
-      destruct current_flow, here, Src0, Dest0, hop_target; simpl; constructor; intros; try discriminate; repeat match goal with
-      | [ H : _ \/ _ |- _ ] => destruct H
-      | [ H : False |- _ ] => destruct H
-      | _ => discriminate
-      | _ => tauto
-      end.
-  Qed.
 End NetworkExample.
