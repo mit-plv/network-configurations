@@ -25,12 +25,6 @@ Section Node.
         is_next_node_path next cdr hop_target current_flow
     end.
 
-  Fixpoint contains_no_duplicates {A} (l : list A) :=
-    match l with
-    | [] => True
-    | car :: cdr => ~In car cdr /\ contains_no_duplicates cdr
-    end.
-
   Record next_node_valid (topology : network_topology) (policy : network_policy) (next : next_node) := {
     all_hops_in_topology : forall here current_flow hop_target,
       next here current_flow hop_target -> topology here hop_target;
@@ -45,7 +39,7 @@ Section Node.
         -> exists path, is_next_node_path next path hop_target current_flow;
 
     all_paths_acyclic : forall path here current_flow,
-      is_next_node_path next path here current_flow -> contains_no_duplicates (here :: path)
+      is_next_node_path next path here current_flow -> NoDup (here :: path)
   }.
 
   Definition dec_next_node := Node -> flow -> option Node.
@@ -271,6 +265,15 @@ Section Node.
       eapply IHpath; eassumption.
   Qed.
 
+  Lemma NoDup_single : forall A (el : A), NoDup [el].
+  Proof.
+    intros.
+    constructor.
+    - unfold not; intros.
+      inversion H.
+    - constructor.
+  Qed.
+
   Theorem all_pairs_paths_generator_valid : forall paths topology policy,
     all_pairs_paths_valid paths topology policy
       -> next_node_valid topology policy (all_pairs_paths_next_node_generator paths topology policy).
@@ -309,7 +312,7 @@ Section Node.
       specialize (H1 current_flow.(Dest)).
       rewrite <- Heqp in H1.
       destruct (paths n current_flow.(Dest)); tauto.
-    - dependent induction path; try (simpl; tauto).
+    - dependent induction path; try apply NoDup_single.
       simpl in H0.
       destruct H0.
       unfold all_pairs_paths_next_node_generator in H0.
@@ -320,9 +323,7 @@ Section Node.
       subst.
       assert (H1' := H1).
       apply IHpath in H1.
-      simpl.
-      simpl in H1.
-      constructor; try tauto.
+      constructor; try assumption.
       unfold not.
       intros.
       destruct H2.
@@ -436,7 +437,7 @@ Section Node.
 
   Record routing_tables_valid (tables : routing_tables) (dec_next : dec_next_node) := {
     no_duplicate_entries : forall here,
-      contains_no_duplicates (tables here);
+      NoDup (tables here);
 
     (* FIXME: the constraint below might be unnecessary/overly restrictive in practice. *)
     no_conflicting_entries : forall here current_flow target1 target2,
@@ -455,7 +456,7 @@ Section Node.
 
   Definition routing_tables_generator_valid (generator : routing_tables_generator) := forall dec_next all_nodes,
     valid_node_enumeration all_nodes
-      -> contains_no_duplicates all_nodes
+      -> NoDup all_nodes
       -> routing_tables_valid
         (generator dec_next all_nodes)
         dec_next.
