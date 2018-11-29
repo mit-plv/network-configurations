@@ -11,7 +11,7 @@ Section Node.
     Dest : Node
   }.
 
-  Definition network_topology := Node -> Node -> Prop.
+  Definition network_topology := Node -> Node -> bool.
 
   Definition network_policy := flow -> bool.
 
@@ -27,7 +27,7 @@ Section Node.
 
   Record next_node_valid (topology : network_topology) (policy : network_policy) (next : next_node) := {
     all_hops_in_topology : forall here current_flow hop_target,
-      next here current_flow hop_target -> topology here hop_target;
+      next here current_flow hop_target -> topology here hop_target = true;
 
     path_exists_only_for_valid_flows : forall current_flow,
       current_flow.(Src) <> current_flow.(Dest)
@@ -51,7 +51,7 @@ Section Node.
     match path with
     | [] => src = dest
     | hop_target :: cdr =>
-      topology src hop_target /\
+      topology src hop_target = true /\
       is_path_in_topology topology hop_target dest cdr
     end.
 
@@ -721,15 +721,15 @@ Section NetworkExample.
   *)
   Local Definition example_topology n1 n2 :=
     match n1, n2 with
-    | A, B | B, A => True
-    | A, C | C, A => True
-    | B, C | C, B => True
-    | B, D | D, B => True
-    | B, E => True
-    | C, D | D, C => True
-    | F, D => True
-    | F, E => True
-    | _, _ => False
+    | A, B | B, A => true
+    | A, C | C, A => true
+    | B, C | C, B => true
+    | B, D | D, B => true
+    | B, E => true
+    | C, D | D, C => true
+    | F, D => true
+    | F, E => true
+    | _, _ => false
     end.
 
   Local Definition example_all_pairs_paths n1 n2 :=
@@ -854,22 +854,7 @@ Section NetworkExample.
     | F => (10, 0, 0, 6)
     end.
 
-  Definition example_ports n1 n2 :=
-    (*
-      FIXME: this is mostly copy-pasted from example_topology.
-      After topologies are decidable, this won't be necessary.
-    *)
-    if (match n1, n2 with
-    | A, B | B, A => true
-    | A, C | C, A => true
-    | B, C | C, B => true
-    | B, D | D, B => true
-    | B, E => true
-    | C, D | D, C => true
-    | F, D => true
-    | F, E => true
-    | _, _ => false
-    end) then Some (n1, n2) else None.
+  Definition example_ports n1 n2 := if example_topology n1 n2 then Some (n1, n2) else None.
 
   Definition example_openflow_entries := generate_openflow_entries ExampleVertex (ExampleVertex * ExampleVertex) example_routing_tables example_node_ips example_ports.
   Definition concrete_openflow_entries := map (fun n => (n, example_openflow_entries n)) (proj1_sig example_enumeration).
