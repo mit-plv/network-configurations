@@ -596,6 +596,82 @@ Section Node.
           subst.
           reflexivity.
   Qed.
+
+  (* TODO: Figure out how to import some of this from a separate file *)
+  Section OpenFlow.
+    Variable Port : Set.
+
+    (* TODO: decide on a good representation for this *)
+    Definition uint : nat -> Type.
+    Proof.
+      intros.
+      (* FIXME: `nat` is not a fixed-width integer; this will cause problems when generating binaries *)
+      exact nat.
+    Defined.
+
+    Definition ipv4_address : Type := uint 8 * uint 8 * uint 8 * uint 8.
+
+    Record ipv4_packet := {
+      IpSrc : ipv4_address;
+      IpDest : ipv4_address
+      (* Other fields exist but are not used here *)
+    }.
+
+
+    (* OpenFlow switch spec: https://www.opennetworking.org/wp-content/uploads/2013/04/openflow-spec-v1.0.0.pdf *)
+
+    Record header_field_matcher := {
+      (* TODO: support IP wildcard matchers *)
+      IpSrcMatcher : option ipv4_address;
+      IpDestMatcher : option ipv4_address
+      (* Other header fields exist but are not used here *)
+    }.
+
+    Inductive openflow_action :=
+    | ForwardToPort : Port -> openflow_action
+    | Drop
+    (* Other actions exist but are not used here *)
+    .
+
+    Record openflow_flow_entry := {
+      header_fields : list header_field_matcher;
+      actions : list openflow_action
+      (* Entries also contain "counters" which are not used here *)
+    }.
+
+    Definition matches_header_field_matcher (packet : ipv4_packet) (matcher : header_field_matcher) :=
+      match matcher.(IpSrcMatcher) with
+      | Some src_address => src_address = packet.(IpSrc)
+      | None => True
+      end /\
+      match matcher.(IpDestMatcher) with
+      | Some dest_address => dest_address = packet.(IpDest)
+      | None => True
+      end.
+
+    Definition generate_openflow_entries
+      (tables : routing_tables)
+      (node_ips : Node -> ipv4_address)
+      (ports : Node -> Node -> option Port)
+      node
+    :=
+      map (fun pair => {|
+        header_fields := [
+          {|
+            IpSrcMatcher := Some (node_ips pair.(fst).(Src));
+            IpDestMatcher := Some (node_ips pair.(fst).(Dest))
+          |}
+        ];
+        actions := [
+          match ports node pair.(snd) with
+          | Some port => ForwardToPort port
+
+          (* Impossible if `tables` is valid for the topology defined by `ports` *)
+          | None => Drop
+          end
+        ]
+      |}) (tables node).
+  End OpenFlow.
 End Node.
 
 Ltac enumerate_finite_set Node :=
@@ -768,5 +844,34 @@ Section NetworkExample.
 
   Definition concrete_routing_tables := map (fun n => (n, example_routing_tables n)) (proj1_sig example_enumeration).
 
-  Compute concrete_routing_tables.
+  Definition example_node_ips node :=
+    match node with
+    | A => (10, 0, 0, 1)
+    | B => (10, 0, 0, 2)
+    | C => (10, 0, 0, 3)
+    | D => (10, 0, 0, 4)
+    | E => (10, 0, 0, 5)
+    | F => (10, 0, 0, 6)
+    end.
+
+  Definition example_ports n1 n2 :=
+    (*
+      FIXME: this is mostly copy-pasted from example_topology.
+      After topologies are decidable, this won't be necessary.
+    *)
+    if (match n1, n2 with
+    | A, B | B, A => true
+    | A, C | C, A => true
+    | B, C | C, B => true
+    | B, D | D, B => true
+    | B, E => true
+    | C, D | D, C => true
+    | F, D => true
+    | F, E => true
+    | _, _ => false
+    end) then Some (n1, n2) else None.
+
+  Definition example_openflow_entries := generate_openflow_entries ExampleVertex (ExampleVertex * ExampleVertex) example_routing_tables example_node_ips example_ports.
+  Definition concrete_openflow_entries := map (fun n => (n, example_openflow_entries n)) (proj1_sig example_enumeration).
+  Compute concrete_openflow_entries.
 End NetworkExample.
