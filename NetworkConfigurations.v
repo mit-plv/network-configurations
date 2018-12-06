@@ -2,6 +2,7 @@ Require Import Coq.Lists.List.
 Import ListNotations.
 Require Import Coq.Program.Equality.
 Require Import ZArith.
+Require Import bbv.Word.
 
 Section Node.
   Variable Node : Set.
@@ -601,15 +602,7 @@ Section Node.
   Section OpenFlow.
     Context {Port : Set}.
 
-    (* TODO: decide on a good representation for this *)
-    Definition uint : nat -> Type.
-    Proof.
-      intros.
-      (* FIXME: `nat` is not a fixed-width integer; this will cause problems when generating binaries *)
-      exact nat.
-    Defined.
-
-    Definition ipv4_address : Type := uint 8 * uint 8 * uint 8 * uint 8.
+    Definition ipv4_address : Type := word 8 * word 8 * word 8 * word 8.
 
     Record ipv4_packet := {
       IpSrc : ipv4_address;
@@ -844,7 +837,7 @@ Section NetworkExample.
 
   Definition concrete_routing_tables := map (fun n => (n, example_routing_tables n)) (proj1_sig example_enumeration).
 
-  Definition example_node_ips node :=
+  Definition example_node_ips_nat node :=
     match node with
     | A => (10, 0, 0, 1)
     | B => (10, 0, 0, 2)
@@ -854,9 +847,13 @@ Section NetworkExample.
     | F => (10, 0, 0, 6)
     end.
 
+  Definition example_node_ips node :=
+    match example_node_ips_nat node with
+    | (n1, n2, n3, n4) => (natToWord 8 n1, natToWord 8 n2, natToWord 8 n3, natToWord 8 n4)
+    end.
+
   Definition example_ports n1 n2 := if example_topology n1 n2 then Some (n1, n2) else None.
 
   Definition example_openflow_entries := generate_openflow_entries ExampleVertex example_routing_tables example_node_ips example_ports.
   Definition concrete_openflow_entries := map (fun n => (n, example_openflow_entries n)) (proj1_sig example_enumeration).
-  Compute concrete_openflow_entries.
 End NetworkExample.

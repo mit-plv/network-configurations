@@ -1,6 +1,6 @@
 .PHONY: coq clean
 
-COQC=coqc -q
+COQC=coqc -q -Q bbv/theories bbv
 
 coq:
 	$(COQC) NetworkConfigurations
