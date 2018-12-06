@@ -3,7 +3,7 @@
 COQC=coqc -q -Q bbv/theories bbv
 
 coq:
-	$(COQC) NetworkConfigurations
+	$(MAKE) -C bbv; $(COQC) NetworkConfigurations
 
 clean:
 	rm -f *.vo *.glob .*.aux
