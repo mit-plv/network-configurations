@@ -599,7 +599,7 @@ Section Node.
 
   (* TODO: Figure out how to import some of this from a separate file *)
   Section OpenFlow.
-    Variable Port : Set.
+    Context {Port : Set}.
 
     (* TODO: decide on a good representation for this *)
     Definition uint : nat -> Type.
@@ -856,7 +856,7 @@ Section NetworkExample.
 
   Definition example_ports n1 n2 := if example_topology n1 n2 then Some (n1, n2) else None.
 
-  Definition example_openflow_entries := generate_openflow_entries ExampleVertex (ExampleVertex * ExampleVertex) example_routing_tables example_node_ips example_ports.
+  Definition example_openflow_entries := generate_openflow_entries ExampleVertex example_routing_tables example_node_ips example_ports.
   Definition concrete_openflow_entries := map (fun n => (n, example_openflow_entries n)) (proj1_sig example_enumeration).
   Compute concrete_openflow_entries.
 End NetworkExample.
