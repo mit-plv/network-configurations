@@ -604,6 +604,11 @@ Section Node.
 
     Definition ipv4_address : Type := word 8 * word 8 * word 8 * word 8.
 
+    Definition ipv4_eqb (ip1 ip2 : ipv4_address) :=
+      match ip1, ip2 with
+      | (a1, b1, c1, d1), (a2, b2, c2, d2) => andb (andb (andb (weqb a1 a2) (weqb b1 b2)) (weqb c1 c2)) (weqb d1 d2)
+      end.
+
     Record ipv4_packet := {
       IpSrc : ipv4_address;
       IpDest : ipv4_address
@@ -613,7 +618,7 @@ Section Node.
 
     (* OpenFlow switch spec: https://www.opennetworking.org/wp-content/uploads/2013/04/openflow-spec-v1.0.0.pdf *)
 
-    Record header_field_matcher := {
+    Record header_fields_matcher := {
       (* TODO: support IP wildcard matchers *)
       IpSrcMatcher : option ipv4_address;
       IpDestMatcher : option ipv4_address
@@ -627,20 +632,52 @@ Section Node.
     .
 
     Record openflow_flow_entry := {
-      header_fields : list header_field_matcher;
-      actions : list openflow_action
+      header_fields : header_fields_matcher;
+      action : openflow_action (* This can actually be a list of actions, but only one is used here *)
       (* Entries also contain "counters" which are not used here *)
     }.
 
-    Definition matches_header_field_matcher (packet : ipv4_packet) (matcher : header_field_matcher) :=
-      match matcher.(IpSrcMatcher) with
-      | Some src_address => src_address = packet.(IpSrc)
-      | None => True
-      end /\
+    Definition matches_header_fields_matcher (packet : ipv4_packet) (matcher : header_fields_matcher) :=
+      andb match matcher.(IpSrcMatcher) with
+      | Some src_address => ipv4_eqb src_address packet.(IpSrc)
+      | None => true
+      end
       match matcher.(IpDestMatcher) with
-      | Some dest_address => dest_address = packet.(IpDest)
-      | None => True
+      | Some dest_address => ipv4_eqb dest_address packet.(IpDest)
+      | None => true
       end.
+
+    Fixpoint get_matching_action packet openflow_flow_entries :=
+      match openflow_flow_entries with
+      | [] => Drop
+      | entry :: cdr =>
+        if matches_header_fields_matcher packet entry.(header_fields)
+        then entry.(action)
+        else get_matching_action packet cdr
+      end.
+
+    Definition node_ip_map := Node -> ipv4_address.
+    Definition node_openflow_entry_map := Node -> list openflow_flow_entry.
+    Definition node_port_connections := Node -> Node -> option Port.
+
+    Inductive openflow_network_packet_state :=
+    | EnRoute : node_ip_map -> node_openflow_entry_map -> node_port_connections -> ipv4_packet -> Node -> openflow_network_packet_state
+    | Arrived
+    | Dropped
+    .
+
+    Inductive openflow_network_step : openflow_network_packet_state -> openflow_network_packet_state -> Prop :=
+    | ForwardPacket : forall node_ips entries ports port packet location new_location,
+      get_matching_action packet (entries location) = ForwardToPort port
+        -> ports location new_location = Some port
+        -> openflow_network_step (EnRoute node_ips entries ports packet location) (EnRoute node_ips entries ports packet new_location)
+    | DropPacket : forall node_ips entries ports packet location,
+      get_matching_action packet (entries location) = Drop
+        -> openflow_network_step (EnRoute node_ips entries ports packet location) Dropped
+    | ReceivePacket : forall node_ips entries ports packet location,
+      ipv4_eqb (node_ips location) packet.(IpDest) = true
+        -> openflow_network_step (EnRoute node_ips entries ports packet location) Arrived
+    .
 
     Definition generate_openflow_entries
       (tables : routing_tables)
@@ -649,20 +686,16 @@ Section Node.
       node
     :=
       map (fun pair => {|
-        header_fields := [
-          {|
-            IpSrcMatcher := Some (node_ips pair.(fst).(Src));
-            IpDestMatcher := Some (node_ips pair.(fst).(Dest))
-          |}
-        ];
-        actions := [
-          match ports node pair.(snd) with
-          | Some port => ForwardToPort port
+        header_fields := {|
+          IpSrcMatcher := Some (node_ips pair.(fst).(Src));
+          IpDestMatcher := Some (node_ips pair.(fst).(Dest))
+        |};
+        action := match ports node pair.(snd) with
+        | Some port => ForwardToPort port
 
-          (* Impossible if `tables` is valid for the topology defined by `ports` *)
-          | None => Drop
-          end
-        ]
+        (* Impossible if `tables` is valid for the topology defined by `ports` *)
+        | None => Drop
+        end
       |}) (tables node).
   End OpenFlow.
 End Node.
