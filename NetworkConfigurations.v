@@ -603,10 +603,21 @@ Section Node.
   Section OpenFlow.
     Definition ipv4_address : Type := word 8 * word 8 * word 8 * word 8.
 
-    Definition ipv4_eqb (ip1 ip2 : ipv4_address) :=
+    Definition ipv4_eqb (ip1 ip2 : ipv4_address) : bool :=
       match ip1, ip2 with
-      | (a1, b1, c1, d1), (a2, b2, c2, d2) => andb (andb (andb (weqb a1 a2) (weqb b1 b2)) (weqb c1 c2)) (weqb d1 d2)
+      | (a1, b1, c1, d1), (a2, b2, c2, d2) => weqb a1 a2 && weqb b1 b2 && weqb c1 c2 && weqb d1 d2
       end.
+
+    Lemma ipv4_eqb_refl : forall ip, ipv4_eqb ip ip = true.
+    Proof.
+      intros; unfold ipv4_eqb; repeat match goal with
+      | [ |- context[let (_, _) := ?i in _] ] => destruct i
+      | [ |- (_ && _)%bool = true ] => unfold andb
+      | [ |- weqb ?w ?w = true ] => apply weqb_true_iff; reflexivity
+      | [ H : weqb ?w ?w = true |- context[if weqb ?w ?w then _ else _] ] => rewrite H
+      | [ |- context[if weqb ?w ?w then _ else _] ] => assert (weqb w w = true)
+      end.
+    Qed.
 
     Record ipv4_packet := {
       IpSrc : ipv4_address;
@@ -636,11 +647,11 @@ Section Node.
       (* Entries also contain "counters" which are not used here *)
     }.
 
-    Definition matches_header_fields_matcher (packet : ipv4_packet) (matcher : header_fields_matcher) :=
-      andb match matcher.(IpSrcMatcher) with
+    Definition matches_header_fields_matcher (packet : ipv4_packet) (matcher : header_fields_matcher) : bool :=
+      match matcher.(IpSrcMatcher) with
       | Some src_address => ipv4_eqb src_address packet.(IpSrc)
       | None => true
-      end
+      end &&
       match matcher.(IpDestMatcher) with
       | Some dest_address => ipv4_eqb dest_address packet.(IpDest)
       | None => true
@@ -695,6 +706,94 @@ Section Node.
         | None => Drop
         end
       |}) (tables node).
+
+    Fixpoint all_ports_exist (topology : network_topology) node openflow_flow_entries :=
+      match openflow_flow_entries with
+      | [] => True
+      | entry :: cdr =>
+        match entry.(action) with
+        | ForwardToPort port => exists hop_target, topology node hop_target = Some port
+        | Drop => True
+        end /\ all_ports_exist topology node cdr
+      end.
+
+    Fixpoint always_reaches_state_after_bounded_steps desired_state num_steps current_state : Prop :=
+      desired_state = current_state \/
+      match num_steps with
+      | 0 => False
+      | S num_steps' =>
+        (exists new_state, openflow_network_step current_state new_state) /\
+        forall new_state,
+          openflow_network_step current_state new_state
+            -> always_reaches_state_after_bounded_steps desired_state num_steps' new_state
+      end.
+
+    Record valid_openflow_entries (topology : network_topology) (policy : network_policy) (node_ips : node_ip_map) (entry_map : node_openflow_entry_map) : Prop := {
+
+      (* TODO: How to determine destination node? Are node IP addresses unique? *)
+      packets_arrive_iff_allowed : forall packet src_node dest_node,
+        node_ips src_node = packet.(IpSrc)
+          -> node_ips dest_node = packet.(IpDest)
+          -> exists num_steps,
+
+            (* Note: If the source/dest node have the same IP (or are the same node), this will always be true if num_steps >= 1 *)
+            always_reaches_state_after_bounded_steps
+              (if policy {| Src := src_node; Dest := dest_node |} then Arrived else Dropped)
+              num_steps
+              (EnRoute node_ips entry_map topology packet src_node);
+      existent_ports : forall node, all_ports_exist topology node (entry_map node)
+    }.
+
+    Definition openflow_rules_generator
+      topology
+      policy
+      (paths : all_pairs_paths)
+      (paths_valid : all_pairs_paths_valid paths topology policy)
+      (all_nodes : list Node)
+      (all_nodes_valid : valid_node_enumeration all_nodes)
+      (all_nodes_unique : NoDup all_nodes)
+      node_ips
+    : {entries : node_openflow_entry_map | valid_openflow_entries topology policy node_ips entries}.
+    Proof.
+      set (dec_next := all_pairs_paths_dec_next_node_generator paths topology policy).
+      set (tables := exhaustive_routing_tables_generator dec_next all_nodes).
+      set (openflow_entries := generate_openflow_entries tables node_ips topology).
+      apply exist with (x := openflow_entries).
+      assert (dec_next_node_valid topology policy dec_next) by (apply all_pairs_paths_dec_generator_valid; assumption).
+      assert (routing_tables_valid tables dec_next) by (apply exhaustive_routing_tables_generator_valid; assumption).
+      constructor; intros.
+      - unfold dec_next_node_valid in H.
+        assert ({src_node = dest_node} + {src_node <> dest_node}) by (apply Node_eq_dec).
+        destruct H3.
+        subst.
+        + exists 1.
+          simpl.
+          apply or_intror.
+          constructor; try (exists Arrived; constructor; rewrite H2; apply ipv4_eqb_refl).
+          intros.
+          apply or_introl.
+          inversion H3; clear H3.
+          * exfalso.
+            subst.
+            unfold openflow_entries, generate_openflow_entries in H10.
+            remember (tables dest_node) as dest_tables.
+            dependent induction dest_tables; try (simpl in H10; discriminate).
+            (* WIP *)
+            admit.
+          * admit.
+          * admit.
+        + admit.
+
+      - unfold openflow_entries, generate_openflow_entries.
+        set (node_tables := tables node).
+        dependent induction node_tables; simpl; try tauto.
+        constructor; try assumption.
+        remember (topology node a.(snd)) as node_a_link.
+        destruct node_a_link; try tauto.
+        exists a.(snd).
+        apply eq_sym.
+        assumption.
+    Abort.
   End OpenFlow.
 End Node.
 
