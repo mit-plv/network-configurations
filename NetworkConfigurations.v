@@ -6,13 +6,14 @@ Require Import bbv.Word.
 
 Section Node.
   Variable Node : Set.
+  Context {Port : Set}.
 
   Record flow := {
     Src : Node;
     Dest : Node
   }.
 
-  Definition network_topology := Node -> Node -> bool.
+  Definition network_topology := Node -> Node -> option Port.
 
   Definition network_policy := flow -> bool.
 
@@ -28,7 +29,7 @@ Section Node.
 
   Record next_node_valid (topology : network_topology) (policy : network_policy) (next : next_node) := {
     all_hops_in_topology : forall here current_flow hop_target,
-      next here current_flow hop_target -> topology here hop_target = true;
+      next here current_flow hop_target -> if topology here hop_target then True else False;
 
     path_exists_only_for_valid_flows : forall current_flow,
       current_flow.(Src) <> current_flow.(Dest)
@@ -52,7 +53,7 @@ Section Node.
     match path with
     | [] => src = dest
     | hop_target :: cdr =>
-      topology src hop_target = true /\
+      (if topology src hop_target then True else False) /\
       is_path_in_topology topology hop_target dest cdr
     end.
 
@@ -600,8 +601,6 @@ Section Node.
 
   (* TODO: Figure out how to import some of this from a separate file *)
   Section OpenFlow.
-    Context {Port : Set}.
-
     Definition ipv4_address : Type := word 8 * word 8 * word 8 * word 8.
 
     Definition ipv4_eqb (ip1 ip2 : ipv4_address) :=
@@ -658,10 +657,9 @@ Section Node.
 
     Definition node_ip_map := Node -> ipv4_address.
     Definition node_openflow_entry_map := Node -> list openflow_flow_entry.
-    Definition node_port_connections := Node -> Node -> option Port.
 
     Inductive openflow_network_packet_state :=
-    | EnRoute : node_ip_map -> node_openflow_entry_map -> node_port_connections -> ipv4_packet -> Node -> openflow_network_packet_state
+    | EnRoute : node_ip_map -> node_openflow_entry_map -> network_topology -> ipv4_packet -> Node -> openflow_network_packet_state
     | Arrived
     | Dropped
     .
@@ -747,15 +745,15 @@ Section NetworkExample.
   *)
   Local Definition example_topology n1 n2 :=
     match n1, n2 with
-    | A, B | B, A => true
-    | A, C | C, A => true
-    | B, C | C, B => true
-    | B, D | D, B => true
-    | B, E => true
-    | C, D | D, C => true
-    | F, D => true
-    | F, E => true
-    | _, _ => false
+    | A, B | B, A
+    | A, C | C, A
+    | B, C | C, B
+    | B, D | D, B
+    | B, E
+    | C, D | D, C
+    | F, D
+    | F, E => Some (n1, n2)
+    | _, _ => None
     end.
 
   Local Definition example_all_pairs_paths n1 n2 :=
