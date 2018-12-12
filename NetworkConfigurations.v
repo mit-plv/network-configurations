@@ -679,8 +679,8 @@ Section Node.
 
     Definition generate_openflow_entries
       (tables : routing_tables)
-      (node_ips : Node -> ipv4_address)
-      (ports : Node -> Node -> option Port)
+      (node_ips : node_ip_map)
+      (topology : network_topology)
       node
     :=
       map (fun pair => {|
@@ -688,10 +688,10 @@ Section Node.
           IpSrcMatcher := Some (node_ips pair.(fst).(Src));
           IpDestMatcher := Some (node_ips pair.(fst).(Dest))
         |};
-        action := match ports node pair.(snd) with
+        action := match topology node pair.(snd) with
         | Some port => ForwardToPort port
 
-        (* Impossible if `tables` is valid for the topology defined by `ports` *)
+        (* Impossible if `tables` is valid for the topology *)
         | None => Drop
         end
       |}) (tables node).
