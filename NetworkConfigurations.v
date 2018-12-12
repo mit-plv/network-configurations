@@ -722,8 +722,6 @@ Ltac enumerate_finite_set Node :=
   );
   exact [].
 
-
-Require Import ZArith.
 Section NetworkExample.
   Local Inductive ExampleVertex :=
   | A
