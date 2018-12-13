@@ -1,6 +1,7 @@
 Require Import Coq.Lists.List.
 Import ListNotations.
 Require Import Coq.Program.Equality.
+Require Import Coq.Logic.FinFun.
 Require Import ZArith.
 Require Import bbv.Word.
 
@@ -448,11 +449,8 @@ Section Node.
 
   Definition routing_tables_generator := dec_next_node -> list Node -> routing_tables.
 
-  Definition valid_node_enumeration (all_nodes : list Node) := forall node, In node all_nodes.
-
   Definition routing_tables_generator_valid (generator : routing_tables_generator) := forall dec_next all_nodes,
-    valid_node_enumeration all_nodes
-      -> NoDup all_nodes
+    Listing all_nodes
       -> routing_tables_valid
         (generator dec_next all_nodes)
         dec_next.
@@ -546,13 +544,13 @@ Section Node.
       clear Heqpairs.
       dependent induction pairs; try apply NoDup_nil.
       simpl.
-      inversion H1; clear H1; subst.
+      inversion H0; clear H0; subst.
       destruct a; simpl.
       destruct (dec_next here {| Src := n; Dest := n0 |}); try (apply IHpairs; assumption).
       constructor; try (apply IHpairs; assumption).
       clear IHpairs.
       dependent induction pairs; try (simpl; tauto).
-      inversion H4; clear H4; subst.
+      inversion H3; clear H3; subst.
       simpl.
       destruct (dec_next here {| Src := fst a; Dest := snd a |}).
       + simpl.
@@ -563,24 +561,24 @@ Section Node.
         * injection H.
           intros.
           subst.
-          apply H3.
+          apply H2.
           simpl.
           tauto.
         * apply IHpairs in H; try assumption.
-          simpl in H3.
+          simpl in H2.
           tauto.
-      + simpl in H3.
+      + simpl in H2.
         apply IHpairs; tauto.
     - constructor; intros.
       + apply map_filter_in_preservation with (element := (current_flow.(Src), current_flow.(Dest))).
         * apply Node_pair_eq_dec.
         * destruct current_flow.
           simpl.
-          rewrite H1.
+          rewrite H0.
           reflexivity.
         * apply nodup_In; apply in_prod; apply H.
-      + apply map_filter_in_filtering in H1; try apply flow_Node_pair_eq_dec.
-        destruct H1.
+      + apply map_filter_in_filtering in H0; try apply flow_Node_pair_eq_dec.
+        destruct H0.
         assert (x = (current_flow.(Src), current_flow.(Dest))).
         * destruct (dec_next here {| Src := fst x; Dest := snd x |}); try discriminate.
           injection e.
@@ -747,16 +745,14 @@ Section Node.
     Definition openflow_rules_generator
       topology
       policy
-      (paths : all_pairs_paths)
-      (paths_valid : all_pairs_paths_valid paths topology policy)
-      (all_nodes : list Node)
-      (all_nodes_valid : valid_node_enumeration all_nodes)
-      (all_nodes_unique : NoDup all_nodes)
+      (paths : {pairs_paths : all_pairs_paths | all_pairs_paths_valid pairs_paths topology policy})
+      (all_nodes : {enumeration : list Node | Listing enumeration})
       node_ips
     : {entries : node_openflow_entry_map | valid_openflow_entries topology policy node_ips entries}.
     Proof.
-      set (dec_next := all_pairs_paths_dec_next_node_generator paths topology policy).
-      set (tables := exhaustive_routing_tables_generator dec_next all_nodes).
+      destruct paths, all_nodes.
+      set (dec_next := all_pairs_paths_dec_next_node_generator x topology policy).
+      set (tables := exhaustive_routing_tables_generator dec_next x0).
       set (openflow_entries := generate_openflow_entries tables node_ips topology).
       apply exist with (x := openflow_entries).
       assert (dec_next_node_valid topology policy dec_next) by (apply all_pairs_paths_dec_generator_valid; assumption).
@@ -788,9 +784,9 @@ Section Node.
         set (node_tables := tables node).
         dependent induction node_tables; simpl; try tauto.
         constructor; try assumption.
-        remember (topology node a.(snd)) as node_a_link.
-        destruct node_a_link; try tauto.
-        exists a.(snd).
+        remember (topology node a0.(snd)) as node_a0_link.
+        destruct node_a0_link; try tauto.
+        exists a0.(snd).
         apply eq_sym.
         assumption.
     Abort.
@@ -799,27 +795,34 @@ End Node.
 
 Ltac enumerate_finite_set Node :=
   match goal with
-  | [ |- {l : list Node | valid_node_enumeration Node l} ] => idtac
+  | [ |- {l : list Node | Listing l} ] => idtac
   | _ => fail 1
   end;
   econstructor;
-  unfold valid_node_enumeration;
-  intros;
-  match goal with
-  | [ node : Node |- _ ] => destruct node
-  end;
-  unshelve (
-    let cdr := fresh "cdr" in
-      evar (cdr : list Node);
-      let cdr' := eval unfold cdr in cdr in
-        clear cdr;
-        match goal with
-        | [ |- In ?n _ ] => instantiate (1 := n :: cdr')
-        end;
-        simpl;
-        tauto
-  );
-  exact [].
+  unfold Listing, Full;
+  constructor;
+  [
+    idtac |
+    intros;
+    match goal with
+    | [ node : Node |- _ ] => destruct node
+    end;
+    unshelve (
+      let cdr := fresh "cdr" in
+        evar (cdr : list Node);
+        let cdr' := eval unfold cdr in cdr in
+          clear cdr;
+          match goal with
+          | [ |- In ?n _ ] => instantiate (1 := n :: cdr')
+          end;
+          simpl;
+          tauto
+    );
+    exact []
+  ];
+  repeat constructor;
+  firstorder discriminate
+.
 
 Section NetworkExample.
   Local Inductive ExampleVertex :=
@@ -946,7 +949,7 @@ Section NetworkExample.
 
   Definition example_dec_next_node := all_pairs_paths_dec_next_node_generator ExampleVertex example_all_pairs_paths example_topology example_policy.
 
-  Local Definition example_enumeration: {l : list ExampleVertex | valid_node_enumeration ExampleVertex l} :=
+  Local Definition example_enumeration: {l : list ExampleVertex | Listing l} :=
     ltac:(enumerate_finite_set ExampleVertex).
 
   Local Definition ExampleVertex_eq_dec : forall (n1 n2 : ExampleVertex), {n1 = n2} + {n1 <> n2}.
@@ -959,8 +962,7 @@ Section NetworkExample.
   Local Theorem example_routing_tables_valid : routing_tables_valid ExampleVertex example_routing_tables example_dec_next_node.
   Proof.
     apply exhaustive_routing_tables_generator_valid.
-    - exact (proj2_sig example_enumeration).
-    - repeat constructor; firstorder discriminate.
+    exact (proj2_sig example_enumeration).
   Qed.
 
   Definition concrete_routing_tables := map (fun n => (n, example_routing_tables n)) (proj1_sig example_enumeration).
