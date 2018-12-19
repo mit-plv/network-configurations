@@ -528,13 +528,13 @@ Section Node.
   Definition Node_pair_eq_dec : forall x y : (Node * Node), {x = y} + {x <> y}.
   Proof.
     intros.
-    destruct x, y, Node_eq_dec with (x := n) (y := n1), Node_eq_dec with (x := n0) (y := n2); subst; try (constructor 1; reflexivity); constructor 2; unfold not; intros; injection H; tauto.
+    destruct x, y, Node_eq_dec with (x := n) (y := n1), Node_eq_dec with (x := n0) (y := n2); subst; try (constructor 1; reflexivity); constructor 2; congruence.
   Defined.
 
   Definition flow_Node_pair_eq_dec : forall x y : (flow * Node), {x = y} + {x <> y}.
   Proof.
     intros.
-    destruct x, y, f, f0, Node_eq_dec with (x := Src0) (y := Src1), Node_eq_dec with (x := Dest0) (y := Dest1), Node_eq_dec with (x := n) (y := n0); subst; try (constructor 1; reflexivity); constructor 2; unfold not; intros; injection H; tauto.
+    destruct x, y, f, f0, Node_eq_dec with (x := Src0) (y := Src1), Node_eq_dec with (x := Dest0) (y := Dest1), Node_eq_dec with (x := n) (y := n0); subst; try (constructor 1; reflexivity); constructor 2; congruence.
   Defined.
 
   Definition flow_eq_dec : forall x y : flow, {x = y} + {x.(Src) <> y.(Src)} + {x.(Dest) <> y.(Dest)}.
@@ -611,10 +611,7 @@ Section Node.
           destruct current_flow.
           simpl in e.
           destruct (dec_next here {| Src := Src0; Dest := Dest0 |}); try discriminate.
-          injection e.
-          intros.
-          subst.
-          reflexivity.
+          congruence.
   Qed.
 
   (* TODO: Figure out how to import some of this from a separate file *)
@@ -825,7 +822,7 @@ Section Node.
         constructor; intros; try (apply H4; constructor 2; assumption).
         apply H4 in H3.
         inversion H3; clear H3; try assumption.
-        injection H5; intros; subst; tauto.
+        congruence.
       - unfold matches_header_fields_matcher.
         simpl.
         remember (ipv4_eqb (node_ips f.(Dest)) (node_ips current_flow.(Dest))) as dests_equal.
@@ -837,7 +834,7 @@ Section Node.
         constructor; intros; try (apply H4; constructor 2; assumption).
         apply H4 in H3.
         inversion H3; clear H3; try assumption.
-        injection H5; intros; subst; tauto.
+        congruence.
     Qed.
 
     Lemma get_matching_action_drops : forall topology dec_next current_flow here node_ips all_nodes,
@@ -874,7 +871,7 @@ Section Node.
         constructor; intros; try (apply H3; constructor 2; assumption).
         apply H3 in H2.
         inversion H2; clear H2; try assumption.
-        injection H4; intros; subst; tauto.
+        congruence.
       - remember (ipv4_eqb (node_ips f.(Dest)) (node_ips current_flow.(Dest))) as dests_equal.
         destruct dests_equal; [ apply eq_sym, ipv4_eqb_iff, H0, eq_sym in Heqdests_equal; tauto | idtac ].
         rewrite andb_false_r.
@@ -883,7 +880,7 @@ Section Node.
         constructor; intros; try (apply H3; constructor 2; assumption).
         apply H3 in H2.
         inversion H2; clear H2; try assumption.
-        injection H4; intros; subst; tauto.
+        congruence.
     Qed.
 
     Lemma dec_next_creates_valid_unique_state_transitions : forall topology policy dec_next node_ips (packet : ipv4_packet) here current_flow all_nodes openflow_entries,
