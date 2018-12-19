@@ -266,7 +266,7 @@ Section Node.
       intros.
       subst.
       omega.
-    - assert (~(In node path)); try tauto.
+    - enough (~(In node path)) by tauto.
       apply strictly_decreasing_costs_strengthening with (big_bound := path_cost costs node path') in H1; try omega.
       eapply IHpath; eassumption.
   Qed.
@@ -344,7 +344,7 @@ Section Node.
         repeat rewrite Heqo in H2.
         simpl in H2.
         omega.
-      + assert (~(In here path)); try tauto.
+      + enough (~(In here path)) by tauto.
         apply paths_move_closer_to_destination in H.
         destruct H.
         eapply decreasing_costs_implies_nonmember with (costs := x); try eassumption.
@@ -791,8 +791,8 @@ Section Node.
         simpl.
         repeat rewrite ipv4_eqb_refl.
         simpl.
-        assert (hop_target = n); try (rewrite <- H3, H0; reflexivity).
-        assert (Some hop_target = Some n); try (injection H3; tauto).
+        enough (hop_target = n) by (rewrite <- H3, H0; reflexivity).
+        enough (Some hop_target = Some n) by (injection H3; tauto).
         rewrite <- H.
         apply H4.
         constructor.
@@ -913,7 +913,7 @@ Section Node.
           ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
           rewrite H3 in H8.
           injection H8; intros; subst.
-          assert (n = new_location); try (subst; reflexivity).
+          enough (n = new_location) by (subst; reflexivity).
           specialize (H0 here).
           specialize (H0 n).
           specialize (H0 new_location).
