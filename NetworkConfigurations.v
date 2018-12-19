@@ -549,30 +549,30 @@ Section Node.
       clear H Heqpairs.
       dependent induction pairs; try apply NoDup_nil.
       simpl.
-      inversion H0; clear H0; subst.
+      inversion_clear H0; subst.
       destruct a; simpl.
       destruct (dec_next here {| Src := n; Dest := n0 |}); try (apply IHpairs; assumption).
       constructor; try (apply IHpairs; assumption).
       clear IHpairs.
       dependent induction pairs; try (simpl; tauto).
-      inversion H3; clear H3; subst.
+      inversion_clear H1; subst.
       simpl.
       destruct (dec_next here {| Src := fst a; Dest := snd a |}).
       + simpl.
         unfold not.
         intros.
-        destruct a; simpl in H.
-        destruct H.
-        * injection H.
+        destruct a.
+        destruct H1.
+        * injection H1.
           intros.
           subst.
-          apply H2.
-          simpl.
+          apply H0.
+          simpl in H.
           tauto.
-        * apply IHpairs in H; try assumption.
-          simpl in H2.
+        * apply IHpairs in H1; try assumption.
+          simpl in H.
           tauto.
-      + simpl in H2.
+      + simpl in H.
         apply IHpairs; tauto.
     - constructor; intros.
       + apply map_filter_in_preservation with (element := (current_flow.(Src), current_flow.(Dest))).
@@ -581,7 +581,7 @@ Section Node.
           simpl.
           rewrite H0.
           reflexivity.
-        * apply nodup_In; apply in_prod; apply H.
+        * apply nodup_In, in_prod; apply H.
       + apply map_filter_in_filtering in H0; try apply flow_Node_pair_eq_dec.
         destruct H0.
         assert (x = (current_flow.(Src), current_flow.(Dest))).
@@ -805,7 +805,7 @@ Section Node.
         intros.
         constructor; intros; try (apply H4; constructor 2; assumption).
         apply H4 in H3.
-        inversion H3; clear H3; try assumption.
+        inversion_clear H3; try assumption.
         congruence.
       - unfold matches_header_fields_matcher.
         simpl.
@@ -816,7 +816,7 @@ Section Node.
         intros.
         constructor; intros; try (apply H4; constructor 2; assumption).
         apply H4 in H3.
-        inversion H3; clear H3; try assumption.
+        inversion_clear H3; try assumption.
         congruence.
     Qed.
 
@@ -852,7 +852,7 @@ Section Node.
         intros.
         constructor; intros; try (apply H3; constructor 2; assumption).
         apply H3 in H2.
-        inversion H2; clear H2; try assumption.
+        inversion_clear H2; try assumption.
         congruence.
       - destruct_with_eqn (ipv4_eqb (node_ips f.(Dest)) (node_ips current_flow.(Dest))); [ apply ipv4_eqb_iff, H0, eq_sym in Heqb; tauto | idtac ].
         rewrite andb_false_r.
@@ -860,7 +860,7 @@ Section Node.
         intros.
         constructor; intros; try (apply H3; constructor 2; assumption).
         apply H3 in H2.
-        inversion H2; clear H2; try assumption.
+        inversion_clear H2; try assumption.
         congruence.
     Qed.
 
@@ -902,7 +902,7 @@ Section Node.
         destruct_with_eqn (ipv4_eqb (node_ips here) (node_ips current_flow.(Dest))); try reflexivity.
         apply ipv4_eqb_iff, H2 in Heqb; tauto.
       - intros.
-        inversion H7; clear H7; subst.
+        inversion_clear H7; subst.
         + apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := n) (current_flow := current_flow) in H; try assumption.
           destruct_with_eqn (topology here n); try tauto.
           assert (
@@ -911,13 +911,13 @@ Section Node.
               (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
             = ForwardToPort p
           ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
-          rewrite H3 in H14.
-          injection H14; intros; subst.
+          rewrite H3 in H8.
+          injection H8; intros; subst.
           assert (n = new_location); try (subst; reflexivity).
           specialize (H0 here).
           specialize (H0 n).
           specialize (H0 new_location).
-          rewrite Heqo0, H15 in H0.
+          rewrite Heqo0, H9 in H0.
           apply H0.
           reflexivity.
         + apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := n) (current_flow := current_flow) in H; try assumption.
@@ -928,22 +928,20 @@ Section Node.
               (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
             = ForwardToPort p
           ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
-          rewrite H3 in H14.
+          rewrite H3 in H8.
           discriminate.
-        + apply ipv4_eqb_iff, H2 in H14; tauto.
+        + apply ipv4_eqb_iff, H2 in H8; tauto.
       - intros.
-        inversion H7; clear H7; subst; try reflexivity.
+        inversion_clear H7; subst; try reflexivity.
         + assert (
             get_matching_action
               {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
               (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
             = Drop
           ) by (apply get_matching_action_drops; assumption).
-          rewrite H3 in H14.
+          rewrite H3 in H8.
           discriminate.
-        + apply ipv4_eqb_iff in H14.
-          simpl in H14.
-          apply H2 in H14.
+        + apply ipv4_eqb_iff, H2 in H8.
           tauto.
     Qed.
 
@@ -960,7 +958,7 @@ Section Node.
         apply ipv4_eqb_refl.
       - intros.
         apply or_introl.
-        inversion H; try reflexivity; subst; repeat match goal with
+        inversion_clear H; try reflexivity; subst; repeat match goal with
         | [ H : context[IpDest {| IpSrc := _; IpDest := _ |}] |- _ ] => simpl in H
         | [ H : ipv4_eqb ?x ?x = false |- _ ] => rewrite ipv4_eqb_refl in H; discriminate
         end.
@@ -1011,16 +1009,16 @@ Section Node.
         dependent induction x generalizing hop_target.
         + simpl in H2.
           subst.
-          inversion H''.
-          apply H1.
+          inversion_clear H''.
+          apply H.
           constructor.
           reflexivity.
         + apply IHx with (hop_target := a); try (simpl in H2; tauto).
-          inversion H''; clear H''; subst.
-          inversion H3; clear H3; subst.
+          inversion_clear H''; subst.
+          inversion_clear H0; subst.
           constructor; try assumption.
           simpl.
-          simpl in H1.
+          simpl in H.
           tauto.
     Qed.
 
@@ -1099,12 +1097,13 @@ Section Node.
         assert (H' := H7).
         apply path_exists_only_for_valid_flows with (current_flow := {| Src := src_node; Dest := dest_node |}) in H7; try (simpl; assumption).
         simpl in H7.
-        assert ((policy {| Src := src_node; Dest := dest_node |} = true \/ src_node = dest_node) <-> should_arrive policy src_node dest_node = true) by (
-          unfold should_arrive; repeat match goal with
+        assert ((policy {| Src := src_node; Dest := dest_node |} = true \/ src_node = dest_node) <-> should_arrive policy src_node dest_node = true). {
+          unfold should_arrive.
+          repeat match goal with
           | [ |- context[if ?x then _ else _] ] => destruct x
           | _ => tauto
-          end
-        ).
+          end.
+        }
         rewrite H8 in H7.
         clear H8.
         destruct_with_eqn (should_arrive policy src_node dest_node).
@@ -1144,7 +1143,7 @@ Section Node.
             rewrite H5.
             assumption.
         + unfold should_arrive in Heqb.
-          assert (policy {| Src := src_node; Dest := dest_node |} = false) by (destruct (policy {| Src := src_node; Dest := dest_node |}); [discriminate | reflexivity]).
+          assert (policy {| Src := src_node; Dest := dest_node |} = false) by (destruct (policy {| Src := src_node; Dest := dest_node |}); firstorder discriminate).
           assert (src_node <> dest_node) by (destruct (Node_eq_dec src_node dest_node), (policy {| Src := src_node; Dest := dest_node |}); try discriminate; assumption).
           clear Heqb H7.
           destruct packet.
