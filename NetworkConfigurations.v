@@ -1227,70 +1227,74 @@ Section Node.
 End Node.
 
 Ltac prove_decidable_equality :=
-  match goal with
-  | [ |- forall x y : ?Node, {x = y} + {x <> y} ] =>
-    intros;
-    repeat match goal with
-    | [ x : Node |- _ ] => destruct x
-    end;
-    firstorder discriminate
-  end.
+  let Node := match goal with
+  | [ |- forall x y : ?Node, {x = y} + {x <> y} ] => Node
+  | _ => fail 1 "Unexpected goal in decidable equality proof"
+  end in
+  intros;
+  repeat match goal with
+  | [ x : Node |- _ ] => destruct x
+  end;
+  firstorder discriminate.
 
 Ltac prove_valid_topology topology :=
-  match goal with
-  | [ |- {t : network_topology ?Node | valid_topology ?Node t} ] =>
-    apply exist with (x := topology);
-    unfold valid_topology;
-    intros;
-    repeat match goal with
-    | [ x : Node |- _ ] => destruct x
-    end;
-    simpl;
-    try reflexivity;
-    try discriminate
-  end.
+  let Node := match goal with
+  | [ |- {t : network_topology ?Node | valid_topology ?Node t} ] => Node
+  | _ => fail 1 "Unexpected goal in valid topology proof"
+  end in
+  apply exist with (x := topology);
+  unfold valid_topology;
+  intros;
+  repeat match goal with
+  | [ x : Node |- _ ] => destruct x
+  end;
+  simpl;
+  try reflexivity;
+  try discriminate.
 
 Ltac prove_injective_ips node_ips :=
-  match goal with
-  | [ |- {ips : node_ip_map ?Node | Injective ips} ] =>
-    apply exist with (x := node_ips);
-    unfold Injective;
-    intros;
-    repeat match goal with
-    | [ x : Node |- _ ] => destruct x
-    end;
-    try reflexivity;
-    try discriminate
-  end.
+  let Node := match goal with
+  | [ |- {ips : node_ip_map ?Node | Injective ips} ] => Node
+  | _ => fail 1 "Unexpected goal in injective IPs proof"
+  end in
+  apply exist with (x := node_ips);
+  unfold Injective;
+  intros;
+  repeat match goal with
+  | [ x : Node |- _ ] => destruct x
+  end;
+  try reflexivity;
+  try discriminate.
 
 Ltac enumerate_finite_set :=
-  match goal with
-  | [ |- {l : list ?Node | Listing l} ] =>
-    econstructor;
-    unfold Listing, Full;
-    constructor;
-    [
-      idtac |
-      intros;
-      match goal with
-      | [ node : Node |- _ ] => destruct node
-      end;
-      unshelve (
-        let cdr := fresh "cdr" in
-          evar (cdr : list Node);
-          let cdr' := eval unfold cdr in cdr in
-            clear cdr;
-            match goal with
-            | [ |- In ?n _ ] => instantiate (1 := n :: cdr')
-            end;
-            simpl;
-            tauto
-      );
-      exact []
-    ];
-    repeat constructor;
-    firstorder discriminate
-  end.
+  let Node := match goal with
+  | [ |- {l : list ?Node | Listing l} ] => Node
+  | _ => fail 1 "Unexpected goal in finite set enumeration"
+  end in
+  econstructor;
+  unfold Listing, Full;
+  constructor;
+  [
+    idtac |
+    intros;
+    match goal with
+    | [ node : Node |- _ ] => destruct node
+    end;
+    unshelve (
+      let cdr := fresh "cdr" in
+        evar (cdr : list Node);
+        let cdr' := (eval unfold cdr in cdr) in
+          clear cdr;
+          match goal with
+          | [ |- In ?n _ ] => instantiate (1 := n :: cdr')
+          end;
+          simpl;
+          tauto
+    );
+    exact []
+  ];
+  repeat constructor;
+  firstorder discriminate.
 
 Section NetworkExample.
   Local Inductive ExampleVertex :=
