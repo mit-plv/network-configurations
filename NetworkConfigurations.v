@@ -1389,4 +1389,10 @@ Section NetworkExample.
 End NetworkExample.
 
 Require Extraction.
+Extraction Language OCaml.
+Extract Inductive bool => "bool" [ "true" "false" ].
+Extract Inductive sumbool => "bool" [ "true" "false" ].
+Extract Inductive option => "option" [ "Some" "None" ].
+Extract Inductive list => "list" [ "[]" "( :: )" ].
+Extract Inductive prod => "( * )" [ "(, )" ].
 Extraction "output/example_entries.ml" example_entries_by_node.
