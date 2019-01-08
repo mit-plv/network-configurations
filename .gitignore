@@ -2,3 +2,5 @@
 *.glob
 *.vo
 *~
+output/*
+!output/.gitkeep

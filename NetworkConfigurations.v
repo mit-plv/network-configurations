@@ -1387,3 +1387,6 @@ Section NetworkExample.
   (* Warning: the line below produces a substantial amount of output (~3000 lines) *)
   (* Compute example_entries_by_node. *)
 End NetworkExample.
+
+Require Extraction.
+Extraction "output/example_entries.ml" example_entries_by_node.
