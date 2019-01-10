@@ -8,7 +8,8 @@ Require Import bbv.Word.
 
 Section Node.
   Variable Node : Set.
-  Context {Port : Set}.
+  Definition Port : Set := word 16.
+  Opaque Port.
 
   Record flow := {
     Src : Node;
@@ -1264,14 +1265,21 @@ Section NetworkExample.
   *)
   Local Definition example_topology n1 n2 :=
     match n1, n2 with
-    | A, B | B, A
-    | A, C | C, A
-    | B, C | C, B
-    | B, D | D, B
-    | B, E
-    | C, D | D, C
-    | F, D
-    | F, E => Some (n1, n2)
+    (* Arbitrarily, the ports are numbered in increasing
+       order at each node. *)
+    | A, B => Some (natToWord 16 0)
+    | B, A => Some (natToWord 16 0)
+    | A, C => Some (natToWord 16 1)
+    | C, A => Some (natToWord 16 0)
+    | B, C => Some (natToWord 16 1)
+    | C, B => Some (natToWord 16 1)
+    | B, D => Some (natToWord 16 2)
+    | D, B => Some (natToWord 16 0)
+    | B, E => Some (natToWord 16 3)
+    | C, D => Some (natToWord 16 2)
+    | D, C => Some (natToWord 16 1)
+    | F, D => Some (natToWord 16 0)
+    | F, E => Some (natToWord 16 1)
     | _, _ => None
     end.
 
@@ -1385,7 +1393,7 @@ Section NetworkExample.
   Definition example_entries_by_node := map (fun node => (node, proj1_sig example_openflow_entries node)) (proj1_sig all_nodes).
 
   (* Warning: the line below produces a substantial amount of output (~3000 lines) *)
-  (* Compute example_entries_by_node. *)
+  Compute example_entries_by_node.
 End NetworkExample.
 
 Require Extraction.
@@ -1395,4 +1403,4 @@ Extract Inductive sumbool => "bool" [ "true" "false" ].
 Extract Inductive option => "option" [ "Some" "None" ].
 Extract Inductive list => "list" [ "[]" "( :: )" ].
 Extract Inductive prod => "( * )" [ "(, )" ].
-Extraction "output/example_entries.ml" example_entries_by_node.
+Extraction "output/example_entries.ml" example_openflow_entries.
