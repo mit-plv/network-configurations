@@ -1403,4 +1403,4 @@ Extract Inductive sumbool => "bool" [ "true" "false" ].
 Extract Inductive option => "option" [ "Some" "None" ].
 Extract Inductive list => "list" [ "[]" "( :: )" ].
 Extract Inductive prod => "( * )" [ "(, )" ].
-Extraction "output/example_entries.ml" example_openflow_entries.
+Extraction "src/example_entries.ml" example_openflow_entries.

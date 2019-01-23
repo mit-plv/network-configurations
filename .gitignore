@@ -2,5 +2,5 @@
 *.glob
 *.vo
 *~
-output/*
-!output/.gitkeep
+/src/example_entries.ml
+/src/example_entries.mli
