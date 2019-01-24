@@ -2,5 +2,4 @@
 *.glob
 *.vo
 *~
-/src/example_entries.ml
-/src/example_entries.mli
+/src/example_entries.*
