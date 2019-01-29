@@ -1,5 +1,9 @@
 *.aux
 *.glob
 *.vo
+*.cmi
+*.cmx
+*.o
 *~
 /src/example_entries.*
+/out

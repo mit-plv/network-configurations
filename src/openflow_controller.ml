@@ -1,14 +1,9 @@
-#use "topfind"
-#thread
-#require "openflow"
-#require "openflow.async"
-
-#use "./src/example_entries.ml"
+open Example_entries
+open Async.Std
 
 let logical_or = Int32.logor
 let int32_to_int = Int32.to_int
 
-open Async.Std
 open Core.Std
 
 open OpenFlow0x01

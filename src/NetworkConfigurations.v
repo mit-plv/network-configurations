@@ -1391,9 +1391,6 @@ Section NetworkExample.
     ltac:(prove_injective_ips example_node_ips).
 
   Definition example_entries_by_node := map (fun node => (node, proj1_sig example_openflow_entries node)) (proj1_sig all_nodes).
-
-  (* Warning: the line below produces a substantial amount of output (~3000 lines) *)
-  Compute example_entries_by_node.
 End NetworkExample.
 
 Require Extraction.
