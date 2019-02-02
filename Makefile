@@ -9,7 +9,7 @@ coq:
 	$(MAKE) -C bbv && $(COQC) src/NetworkConfigurations
 
 install:
-	opam install openflow && opam pin openflow 0.9.1
+	opam pin openflow 0.9.1
 
 compile-ocaml:
 	mkdir -p out && $(OCAMLC) -o out/openflow_controller src/example_entries.mli src/example_entries.ml src/openflow_controller.ml
