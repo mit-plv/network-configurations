@@ -25,7 +25,7 @@ class MyTopo(Topo):
 		self.addLink(eHost, E, 0, 99)
 		self.addLink(fHost, F, 0, 99)
 
-    # example_topology:
+		# example_topology:
 		#      B ------> E
 		#    / | \       ↑
 		#   A  |  D <--- F
@@ -35,13 +35,13 @@ class MyTopo(Topo):
 		# Note: This network is more lenient than the diagram above in that
 		# all links are bidirectional.
 
-		self.addLink(A, B, 0, 0)
-		self.addLink(A, C, 1, 0)
-		self.addLink(B, C, 1, 1)
-		self.addLink(B, D, 2, 0)
-		self.addLink(B, E, 3, 1000)
-		self.addLink(C, D, 2, 1)
-		self.addLink(F, D, 0, 1000)
-		self.addLink(F, E, 1, 1001)
+		self.addLink(A, B, 1, 1)
+		self.addLink(A, C, 2, 1)
+		self.addLink(B, C, 2, 2)
+		self.addLink(B, D, 3, 1)
+		self.addLink(B, E, 4, 1000)
+		self.addLink(C, D, 3, 2)
+		self.addLink(F, D, 1, 1000)
+		self.addLink(F, E, 2, 1001)
 
 topos = {'mytopo': lambda: MyTopo()}

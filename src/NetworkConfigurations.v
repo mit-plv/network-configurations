@@ -1267,19 +1267,19 @@ Section NetworkExample.
     match n1, n2 with
     (* Arbitrarily, the ports are numbered in increasing
        order at each node. *)
-    | A, B => Some (natToWord 16 0)
-    | B, A => Some (natToWord 16 0)
-    | A, C => Some (natToWord 16 1)
-    | C, A => Some (natToWord 16 0)
-    | B, C => Some (natToWord 16 1)
-    | C, B => Some (natToWord 16 1)
-    | B, D => Some (natToWord 16 2)
-    | D, B => Some (natToWord 16 0)
-    | B, E => Some (natToWord 16 3)
-    | C, D => Some (natToWord 16 2)
-    | D, C => Some (natToWord 16 1)
-    | F, D => Some (natToWord 16 0)
-    | F, E => Some (natToWord 16 1)
+    | A, B => Some (natToWord 16 1)
+    | B, A => Some (natToWord 16 1)
+    | A, C => Some (natToWord 16 2)
+    | C, A => Some (natToWord 16 1)
+    | B, C => Some (natToWord 16 2)
+    | C, B => Some (natToWord 16 2)
+    | B, D => Some (natToWord 16 3)
+    | D, B => Some (natToWord 16 1)
+    | B, E => Some (natToWord 16 4)
+    | C, D => Some (natToWord 16 3)
+    | D, C => Some (natToWord 16 2)
+    | F, D => Some (natToWord 16 1)
+    | F, E => Some (natToWord 16 2)
     | _, _ => None
     end.
 

@@ -99,7 +99,7 @@ let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) _ evt =
     | `Message (sw_id, (_xid, msg)) ->
       match msg with
       | PacketInMsg pktIn ->
-        (if pktIn.total_len <> 0 then
+        (if pktIn.total_len <> 342 then
           Printf.printf
             "switch %Lu: %s\n%!"
             sw_id
