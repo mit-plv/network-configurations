@@ -55,6 +55,7 @@ let generate_flow_mod_message entry = FlowModMsg {
   };
   actions = match entry.action with
     | ForwardToPort p -> [Output (PhysicalPort (int32_to_int (word_to_int32 p)))]
+    | ReceiveAtDest -> [Output (PhysicalPort 99)]
     | Drop -> []
 }
 
@@ -68,28 +69,10 @@ let switch_id_to_node id = match id with
   | 6L -> F
   | _ -> failwith "Message from unknown switch"
 
-let accept_at_destination_switch sw_id = FlowModMsg {
-  command = AddFlow;
-  priority = 1;
-  cookie = 0L;
-  idle_timeout = Permanent;
-  hard_timeout = Permanent;
-  notify_when_removed = false;
-  apply_to_packet = None;
-  out_port = None;
-  check_overlap = false;
-  pattern = { match_all with
-    dlTyp = Some 0x800;
-    nwDst = Some (ip_to_mask (example_node_ips (switch_id_to_node sw_id)))
-  };
-  actions = [Output (PhysicalPort 99)] (* TODO: avoid assuming that destination switches/hosts are connected at port 99 *)
-}
-
 let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) _ evt =
   match evt with
     | `Connect (sw_id, _) ->
       Deferred.all (
-        Async_OpenFlow.OpenFlow0x01.Controller.send ctl sw_id (1l, accept_at_destination_switch sw_id) ::
         List.map (example_openflow_entries (switch_id_to_node sw_id)) (fun entry ->
           Async_OpenFlow.OpenFlow0x01.Controller.send ctl sw_id (1l, generate_flow_mod_message entry)
         )

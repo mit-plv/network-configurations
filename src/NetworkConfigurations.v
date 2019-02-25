@@ -653,6 +653,7 @@ Section Node.
     Inductive openflow_action :=
     | ForwardToPort : Port -> openflow_action
     | Drop
+    | ReceiveAtDest
     (* Other actions exist but are not used here *)
     .
 
@@ -701,7 +702,8 @@ Section Node.
         -> ipv4_eqb (node_ips location) packet.(IpDest) = false
         -> openflow_network_step (EnRoute node_ips entries ports packet location) Dropped
     | ReceivePacket : forall node_ips entries ports packet location,
-      ipv4_eqb (node_ips location) packet.(IpDest) = true
+      get_matching_action packet (entries location) = ReceiveAtDest
+        -> ipv4_eqb (node_ips location) packet.(IpDest) = true
         -> openflow_network_step (EnRoute node_ips entries ports packet location) Arrived
     .
 
@@ -711,7 +713,13 @@ Section Node.
       (topology : network_topology)
       node
     :=
-      map (fun pair => {|
+      {|
+        header_fields := {|
+          IpSrcMatcher := None;
+          IpDestMatcher := Some (node_ips node)
+        |};
+        action := ReceiveAtDest
+      |} :: map (fun pair => {|
         header_fields := {|
           IpSrcMatcher := Some (node_ips pair.(fst).(Src));
           IpDestMatcher := Some (node_ips pair.(fst).(Dest))
@@ -731,6 +739,7 @@ Section Node.
         match entry.(action) with
         | ForwardToPort port => exists hop_target, topology node hop_target = Some port
         | Drop => True
+        | ReceiveAtDest => True
         end /\ all_ports_exist topology node cdr
       end.
 
@@ -824,6 +833,7 @@ Section Node.
         -> Injective node_ips
         -> Listing all_nodes
         -> routing_tables_valid (exhaustive_routing_tables_generator dec_next all_nodes) dec_next
+        -> here <> current_flow.(Dest)
         -> get_matching_action
           {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
           (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
@@ -833,7 +843,7 @@ Section Node.
       assert (forall hop, dec_next here current_flow = Some hop <-> In (current_flow, hop) (exhaustive_routing_tables_generator dec_next all_nodes here)) by (intros; apply entries_match_next_node_result; assumption).
       clear H3.
       unfold generate_openflow_entries.
-      induction (exhaustive_routing_tables_generator dec_next all_nodes here); [ apply H4 in H; inversion H | idtac ].
+      induction (exhaustive_routing_tables_generator dec_next all_nodes here); [ apply H5 in H; inversion H | idtac ].
       simpl.
       destruct a.
       assert ({current_flow = f} + {current_flow.(Src) <> f.(Src)} + {current_flow.(Dest) <> f.(Dest)}) by (apply flow_eq_dec).
@@ -843,10 +853,11 @@ Section Node.
         simpl.
         repeat rewrite ipv4_eqb_refl.
         simpl.
+        destruct_with_eqn (ipv4_eqb (node_ips here) (node_ips Dest1)); try (apply ipv4_eqb_iff, H1 in Heqb; tauto).
         enough (hop_target = n) by (rewrite <- H3, H0; reflexivity).
         enough (Some hop_target = Some n) by (injection H3; tauto).
         rewrite <- H.
-        apply H4.
+        apply H5.
         constructor.
         reflexivity.
       - unfold matches_header_fields_matcher.
@@ -855,8 +866,8 @@ Section Node.
         simpl.
         apply IHl.
         intros.
-        constructor; intros; try (apply H4; constructor 2; assumption).
-        apply H4 in H3.
+        constructor; intros; try (apply H5; constructor 2; assumption).
+        apply H5 in H3.
         inversion_clear H3; try assumption.
         congruence.
       - unfold matches_header_fields_matcher.
@@ -866,8 +877,8 @@ Section Node.
         (* FIXME: the lines below here are duplicated from the above subgoal *)
         apply IHl.
         intros.
-        constructor; intros; try (apply H4; constructor 2; assumption).
-        apply H4 in H3.
+        constructor; intros; try (apply H5; constructor 2; assumption).
+        apply H5 in H3.
         inversion_clear H3; try assumption.
         congruence.
     Qed.
@@ -877,6 +888,7 @@ Section Node.
         -> Injective node_ips
         -> Listing all_nodes
         -> routing_tables_valid (exhaustive_routing_tables_generator dec_next all_nodes) dec_next
+        -> here <> current_flow.(Dest)
         -> get_matching_action
           {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
           (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
@@ -886,6 +898,10 @@ Section Node.
       assert (forall hop, dec_next here current_flow = Some hop <-> In (current_flow, hop) (exhaustive_routing_tables_generator dec_next all_nodes here)) by (intros; apply entries_match_next_node_result; assumption).
       clear H2.
       unfold generate_openflow_entries.
+      simpl.
+      unfold matches_header_fields_matcher.
+      simpl.
+      destruct_with_eqn (ipv4_eqb (node_ips here) (node_ips current_flow.(Dest))); try (apply ipv4_eqb_iff, H0 in Heqb; tauto).
       induction (exhaustive_routing_tables_generator dec_next all_nodes here); try reflexivity.
       simpl.
       unfold matches_header_fields_matcher.
@@ -894,24 +910,24 @@ Section Node.
       assert ({current_flow = f} + {current_flow.(Src) <> f.(Src)} + {current_flow.(Dest) <> f.(Dest)}) by (apply flow_eq_dec).
       destruct H2; [ destruct s | idtac ].
       - subst.
-        assert (dec_next here f = Some n) by (apply H3; simpl; tauto).
+        assert (dec_next here f = Some n) by (apply H4; simpl; tauto).
         rewrite H2 in H.
         discriminate.
       (* TODO: combine this proof with `get_matching_action_forwards_to_correct_port`
         and extract duplicated portions into an ltac script *)
-      - destruct_with_eqn (ipv4_eqb (node_ips f.(Src)) (node_ips current_flow.(Src))); [ apply ipv4_eqb_iff, H0, eq_sym in Heqb; tauto | idtac ].
+      - destruct_with_eqn (ipv4_eqb (node_ips f.(Src)) (node_ips current_flow.(Src))); [ apply ipv4_eqb_iff, H0, eq_sym in Heqb0; tauto | idtac ].
         apply IHl.
         intros.
-        constructor; intros; try (apply H3; constructor 2; assumption).
-        apply H3 in H2.
+        constructor; intros; try (apply H4; constructor 2; assumption).
+        apply H4 in H2.
         inversion_clear H2; try assumption.
         congruence.
-      - destruct_with_eqn (ipv4_eqb (node_ips f.(Dest)) (node_ips current_flow.(Dest))); [ apply ipv4_eqb_iff, H0, eq_sym in Heqb; tauto | idtac ].
+      - destruct_with_eqn (ipv4_eqb (node_ips f.(Dest)) (node_ips current_flow.(Dest))); [ apply ipv4_eqb_iff, H0, eq_sym in Heqb0; tauto | idtac ].
         rewrite andb_false_r.
         apply IHl.
         intros.
-        constructor; intros; try (apply H3; constructor 2; assumption).
-        apply H3 in H2.
+        constructor; intros; try (apply H4; constructor 2; assumption).
+        apply H4 in H2.
         inversion_clear H2; try assumption.
         congruence.
     Qed.
@@ -982,7 +998,8 @@ Section Node.
           ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
           rewrite H3 in H8.
           discriminate.
-        + apply ipv4_eqb_iff, H2 in H8; tauto.
+        + apply ipv4_eqb_iff, H2 in H9.
+          tauto.
       - intros.
         inversion_clear H7; subst; try reflexivity.
         + assert (
@@ -993,12 +1010,15 @@ Section Node.
           ) by (apply get_matching_action_drops; assumption).
           rewrite H3 in H8.
           discriminate.
-        + apply ipv4_eqb_iff, H2 in H8.
+        + apply ipv4_eqb_iff, H2 in H9.
           tauto.
     Qed.
 
-    Lemma reaches_arrived_state_from_destination_in_one_step : forall node_ips entries topology src_node dest_node,
-      always_reaches_state_after_bounded_steps Arrived 1 (EnRoute node_ips entries topology {| IpSrc := node_ips src_node; IpDest := node_ips dest_node |} dest_node).
+    Lemma reaches_arrived_state_from_destination_in_one_step : forall node_ips topology tables src_node dest_node,
+      always_reaches_state_after_bounded_steps
+        Arrived
+        1
+        (EnRoute node_ips (generate_openflow_entries tables node_ips topology) topology {| IpSrc := node_ips src_node; IpDest := node_ips dest_node |} dest_node).
     Proof.
       intros.
       simpl.
@@ -1006,8 +1026,13 @@ Section Node.
       constructor.
       - exists Arrived.
         constructor.
-        simpl.
-        apply ipv4_eqb_refl.
+        + simpl.
+          unfold matches_header_fields_matcher.
+          simpl.
+          rewrite ipv4_eqb_refl.
+          reflexivity.
+        + simpl.
+          apply ipv4_eqb_refl.
       - intros.
         apply or_introl.
         inversion_clear H; try reflexivity; subst; repeat match goal with
@@ -1205,6 +1230,9 @@ Section Node.
           eapply disallowed_packet_eventually_dropped; eassumption.
       - unfold openflow_entries, generate_openflow_entries.
         set (node_tables := tables node).
+        simpl.
+        constructor.
+        tauto.
         dependent induction node_tables; simpl; try tauto.
         constructor; try assumption.
         destruct_with_eqn (topology node a.(snd)); try tauto.
