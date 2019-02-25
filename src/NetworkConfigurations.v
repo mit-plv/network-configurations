@@ -1490,7 +1490,7 @@ Section NetworkExample.
     ltac:(prove_valid_topology example_topology)
     example_static_policy
     (exist _ example_all_pairs_paths example_all_pairs_paths_valid)
-    ltac:(enumerate_finite_set)
+    all_nodes
     ltac:(prove_injective_ips example_node_ips).
 End NetworkExample.
 

@@ -3,6 +3,8 @@ open Async.Std
 
 let logical_or = Int32.logor
 let int32_to_int = Int32.to_int
+let int64_to_int = Int64.to_int
+let nth = List.nth
 
 open Core.Std
 
@@ -55,19 +57,13 @@ let generate_flow_mod_message entry = FlowModMsg {
   };
   actions = match entry.action with
     | ForwardToPort p -> [Output (PhysicalPort (int32_to_int (word_to_int32 p)))]
-    | ReceiveAtDest -> [Output (PhysicalPort 99)]
+    | ReceiveAtDest -> [Output (PhysicalPort 99); Output(Controller 1024)]
     | Drop -> []
 }
 
-(* TODO: This mapping should probably be generated from Coq code and/or provided by the user  *)
-let switch_id_to_node id = match id with
-  | 1L -> A
-  | 2L -> B
-  | 3L -> C
-  | 4L -> D
-  | 5L -> E
-  | 6L -> F
-  | _ -> failwith "Message from unknown switch"
+(* Note: This requires the user to arrange switch IDs in the same order as their Coq inductive type
+ * i.e. the first switch has ID 1, second has ID 2, etc. *)
+let switch_id_to_node sw_id = nth all_nodes (int64_to_int sw_id - 1)
 
 let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) _ evt =
   match evt with
@@ -88,6 +84,9 @@ let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) _ evt =
             sw_id
             (packetIn_to_string pktIn)
         );
+        if pktIn.reason = ExplicitSend
+        then ((* TODO: resend all flows *))
+        else ();
         return []
       | ErrorMsg err ->
         print_endline "error message";
