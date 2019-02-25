@@ -1484,7 +1484,7 @@ Section NetworkExample.
 
   Definition all_nodes : {l : list ExampleVertex | Listing l} := ltac:(enumerate_finite_set).
 
-  Definition example_openflow_entries := openflow_rules_generator
+  Definition generated_controller_entries := openflow_rules_generator
     ExampleVertex
     ltac:(prove_decidable_equality)
     ltac:(prove_valid_topology example_topology)
@@ -1501,4 +1501,4 @@ Extract Inductive sumbool => "bool" [ "true" "false" ].
 Extract Inductive option => "option" [ "Some" "None" ].
 Extract Inductive list => "list" [ "[]" "( :: )" ].
 Extract Inductive prod => "( * )" [ "(, )" ].
-Extraction "src/example_entries.ml" example_openflow_entries.
+Extraction "src/generated_controller.ml" generated_controller_entries.

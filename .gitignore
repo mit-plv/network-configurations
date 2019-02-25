@@ -5,5 +5,5 @@
 *.cmx
 *.o
 *~
-/src/example_entries.*
+/src/generated_controller.*
 /out

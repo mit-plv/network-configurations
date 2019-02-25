@@ -1,4 +1,4 @@
-open Example_entries
+open Generated_controller
 open Async.Std
 
 let logical_or = Int32.logor
@@ -69,7 +69,7 @@ let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) _ evt =
   match evt with
     | `Connect (sw_id, _) ->
       Deferred.all (
-        List.map (example_openflow_entries (switch_id_to_node sw_id)) (fun entry ->
+        List.map (generated_controller_entries (switch_id_to_node sw_id)) (fun entry ->
           Async_OpenFlow.OpenFlow0x01.Controller.send ctl sw_id (1l, generate_flow_mod_message entry)
         )
       )
