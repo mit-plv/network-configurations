@@ -23,7 +23,7 @@ Section Node.
     | _, _ => True
     end.
 
-  Definition network_policy := flow -> bool.
+  Definition static_network_policy := flow -> bool.
 
   Definition next_node := Node -> flow -> Node -> Prop.
 
@@ -35,7 +35,7 @@ Section Node.
         is_next_node_path next cdr hop_target current_flow
     end.
 
-  Record next_node_valid (topology : network_topology) (policy : network_policy) (next : next_node) := {
+  Record next_node_valid (topology : network_topology) (policy : static_network_policy) (next : next_node) := {
     all_hops_in_topology : forall here current_flow hop_target,
       next here current_flow hop_target -> if topology here hop_target then True else False;
 
@@ -58,7 +58,7 @@ Section Node.
 
   Definition dec_next_node := Node -> flow -> option Node.
 
-  Definition dec_next_node_valid (topology : network_topology) (policy : network_policy) (dec_next : dec_next_node) :=
+  Definition dec_next_node_valid (topology : network_topology) (policy : static_network_policy) (dec_next : dec_next_node) :=
     next_node_valid topology policy (fun here current_flow hop_target => dec_next here current_flow = Some hop_target).
 
   Fixpoint is_path_in_topology (topology : network_topology) src dest path :=
@@ -74,7 +74,7 @@ Section Node.
   Definition all_pairs_paths_next_node_generator
     (paths : all_pairs_paths)
     (topology : network_topology)
-    (policy : network_policy)
+    (policy : static_network_policy)
     here
     current_flow
     hop_target
@@ -362,7 +362,7 @@ Section Node.
   Definition all_pairs_paths_dec_next_node_generator
     (paths : all_pairs_paths)
     (topology : network_topology)
-    (policy : network_policy)
+    (policy : static_network_policy)
     here
     current_flow
   :=
@@ -600,7 +600,6 @@ Section Node.
           congruence.
   Qed.
 
-  (* TODO: Figure out how to import some of this from a separate file *)
   Section OpenFlow.
     Definition ipv4_address : Type := word 8 * word 8 * word 8 * word 8.
 
@@ -746,14 +745,14 @@ Section Node.
             -> always_reaches_state_after_bounded_steps desired_state num_steps' new_state
       end.
 
-    Definition should_arrive (policy : network_policy) src dest :=
+    Definition should_arrive (policy : static_network_policy) src dest :=
       if policy {| Src := src; Dest := dest |}
       then true
       else if Node_eq_dec src dest
         then true
         else false.
 
-    Record valid_openflow_entries (topology : network_topology) (policy : network_policy) (node_ips : node_ip_map) (entry_map : node_openflow_entry_map) : Prop := {
+    Record valid_openflow_entries (topology : network_topology) (policy : static_network_policy) (node_ips : node_ip_map) (entry_map : node_openflow_entry_map) : Prop := {
       packets_arrive_iff_allowed : forall packet src_node dest_node,
         node_ips src_node = packet.(IpSrc)
           -> node_ips dest_node = packet.(IpDest)
@@ -766,6 +765,58 @@ Section Node.
               (EnRoute node_ips entry_map topology packet src_node);
       existent_ports : forall node, all_ports_exist topology node (entry_map node)
     }.
+
+    Record flow_transition_system {state} := {
+      Initial : state;
+      (* TODO: incorporate wall clock time *)
+      Step : state -> flow -> state
+    }.
+
+    Arguments flow_transition_system : clear implicits.
+
+    Definition join_transition_systems {A} {B} (sys1 : flow_transition_system A) (sys2 : flow_transition_system B) :=
+      {|
+        Initial := (sys1.(Initial), sys2.(Initial));
+        Step := fun start next_flow => (Step sys1 start.(fst) next_flow, Step sys2 start.(snd) next_flow)
+      |}.
+
+    Inductive trc {state : Set} {step : state -> flow -> state} : state -> state -> Prop :=
+    | TrcRefl : forall (start : state), trc start start
+    | TrcFront : forall start mid dest sent_flow,
+      step start sent_flow = mid
+        -> trc mid dest
+        -> trc start dest
+    .
+
+    Arguments trc {state} step.
+
+    Record dynamic_network_policy {policy_state : Set} := {
+      policy_system : flow_transition_system policy_state;
+
+      policy_state_decider : policy_state -> static_network_policy
+    }.
+
+    Section NetworkSystem.
+      Context {policy_state : Set}.
+      Variable topology : network_topology.
+      Variable policy : @dynamic_network_policy policy_state.
+      Variable node_ips : node_ip_map.
+
+      Record network_controller {controller_state : Set} := {
+        controller_system : flow_transition_system controller_state;
+
+        controller_state_decider : controller_state -> node_openflow_entry_map
+      }.
+
+      Definition controller_implements_policy {controller_state : Set} (controller : @network_controller controller_state) controller :=
+        forall (policy_and_controller_state : policy_state * controller_state),
+          let joined_sys := join_transition_systems policy.(policy_system) controller.(controller_system) in
+            trc
+              joined_sys.(Step)
+              joined_sys.(Initial)
+              policy_and_controller_state
+          -> valid_openflow_entries topology (policy.(policy_state_decider) policy_and_controller_state.(fst)) node_ips (controller.(controller_state_decider) policy_and_controller_state.(snd)).
+    End NetworkSystem.
 
     Lemma get_matching_action_forwards_to_correct_port : forall topology dec_next current_flow here hop_target port node_ips all_nodes,
       dec_next here current_flow = Some hop_target
@@ -1328,7 +1379,7 @@ Section NetworkExample.
     | _, _ => 1
     end.
 
-  Definition policy_satisfiable (policy : network_policy ExampleVertex) := forall n1 n2,
+  Definition policy_satisfiable (policy : static_network_policy ExampleVertex) := forall n1 n2,
     policy {| Src := n1; Dest := n2 |} = true -> example_all_pairs_paths n1 n2 <> None.
 
   Local Lemma example_paths_valid : forall policy,
@@ -1348,12 +1399,36 @@ Section NetworkExample.
       destruct src, dest; simpl; try omega; tauto.
   Qed.
 
-  Local Definition example_policy current_flow :=
+  Local Definition example_static_policy current_flow :=
     match Src ExampleVertex current_flow, Dest ExampleVertex current_flow with
     | A, F | E, A => false
     | A, _ | _, A | F, _ => true
     | _, _ => false
     end.
+
+  Definition ExampleVertex_eq_dec : forall (x y : ExampleVertex), {x = y} + {x <> y} :=
+    ltac:(prove_decidable_equality).
+
+  Definition ExampleVertex_eqb x y := if ExampleVertex_eq_dec x y then true else false.
+
+  Fixpoint in_pair_list pair_list current_flow :=
+    match pair_list with
+    | [] => false
+    | (src, dest) :: cdr => (ExampleVertex_eqb src (Src ExampleVertex current_flow) && ExampleVertex_eqb dest (Dest ExampleVertex current_flow)) || in_pair_list cdr current_flow
+    end.
+
+  (*
+    Initial state: A can send to anywhere
+    After each successful packet from x to y, policy updates so y can also send to x
+  *)
+  Definition example_dynamic_policy : @dynamic_network_policy ExampleVertex (list (ExampleVertex * ExampleVertex)) := {|
+    policy_system := {|
+      Initial := [(A, B); (A, C); (A, D); (A, E); (A, F)];
+      Step := fun current_state last_flow =>
+        (Dest ExampleVertex last_flow, Src ExampleVertex last_flow) :: current_state
+    |};
+    policy_state_decider := in_pair_list
+  |}.
 
   Definition example_node_ips_nat node :=
     match node with
@@ -1371,7 +1446,7 @@ Section NetworkExample.
     end.
 
 
-  Definition example_all_pairs_paths_valid : all_pairs_paths_valid ExampleVertex example_topology example_policy example_all_pairs_paths.
+  Definition example_all_pairs_paths_valid : all_pairs_paths_valid ExampleVertex example_topology example_static_policy example_all_pairs_paths.
   Proof.
     apply example_paths_valid.
     unfold policy_satisfiable.
@@ -1385,12 +1460,10 @@ Section NetworkExample.
     ExampleVertex
     ltac:(prove_decidable_equality)
     ltac:(prove_valid_topology example_topology)
-    example_policy
+    example_static_policy
     (exist _ example_all_pairs_paths example_all_pairs_paths_valid)
-    all_nodes
+    ltac:(enumerate_finite_set)
     ltac:(prove_injective_ips example_node_ips).
-
-  Definition example_entries_by_node := map (fun node => (node, proj1_sig example_openflow_entries node)) (proj1_sig all_nodes).
 End NetworkExample.
 
 Require Extraction.
