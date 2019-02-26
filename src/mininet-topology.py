@@ -42,6 +42,6 @@ class MyTopo(Topo):
 		self.addLink(B, E, 4, 1000)
 		self.addLink(C, D, 3, 2)
 		self.addLink(F, D, 1, 1000)
-		self.addLink(F, E, 2, 1001)
+		self.addLink(E, F, 1, 2)
 
 topos = {'mytopo': lambda: MyTopo()}
