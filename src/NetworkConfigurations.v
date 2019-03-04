@@ -786,7 +786,7 @@ Section Node.
     Definition join_transition_systems {A} {B} (sys1 : flow_transition_system A) (sys2 : flow_transition_system B) :=
       {|
         Initial := (sys1.(Initial), sys2.(Initial));
-        Step := fun start next_flow => (Step sys1 start.(fst) next_flow, Step sys2 start.(snd) next_flow)
+        Step := fun current_state next_flow => (Step sys1 current_state.(fst) next_flow, Step sys2 current_state.(snd) next_flow)
       |}.
 
     Inductive trc {state : Set} {step : state -> flow -> state} : state -> state -> Prop :=
@@ -799,20 +799,40 @@ Section Node.
 
     Arguments trc {state} step.
 
-    Lemma invariant_weakening {state : Set} : forall step start dest (invariant : state -> Prop),
-      invariant start
-        -> (forall current_state next_flow, invariant current_state -> invariant (step current_state next_flow))
-        -> @trc state step start dest
-        -> invariant dest.
-    Proof.
-      intros; dependent induction H1; subst; eauto.
-    Qed.
+    Definition invariant {state : Set} (sys : flow_transition_system state) (condition : state -> Prop) := forall new_state,
+      trc sys.(Step) sys.(Initial) new_state
+        -> condition new_state.
 
     Record dynamic_network_policy {policy_state : Set} := {
       policy_system : flow_transition_system policy_state;
 
       policy_state_decider : policy_state -> static_network_policy
     }.
+
+    Definition filter_transition_system {state} (predicate : state -> flow -> bool) (sys : flow_transition_system state) :=
+      {|
+        Initial := sys.(Initial);
+        Step := fun current_state next_flow =>
+          if predicate current_state next_flow
+          then sys.(Step) current_state next_flow
+          else current_state
+      |}.
+
+    Lemma filter_transition_system_trc {state : Set} : forall predicate (sys : flow_transition_system state) new_state,
+      let filtered_sys := filter_transition_system predicate sys in
+      trc filtered_sys.(Step) sys.(Initial) new_state
+        -> trc sys.(Step) sys.(Initial) new_state.
+    Proof.
+      intros.
+      unfold filtered_sys, filter_transition_system in H.
+      simpl in H.
+      clear Node_eq_dec filtered_sys.
+      remember sys.(Initial) as start_state; clear Heqstart_state.
+      dependent induction H; try apply TrcRefl.
+      destruct (predicate start sent_flow).
+      - eapply TrcFront; eassumption.
+      - subst; assumption.
+    Qed.
 
     Section NetworkSystem.
       Context {policy_state : Set}.
@@ -826,18 +846,22 @@ Section Node.
         controller_state_decider : controller_state -> node_openflow_entry_map
       }.
 
-      Definition all_pairs_paths_valid_dynamic paths := forall policy_state_value,
-        trc policy.(policy_system).(Step) policy.(policy_system).(Initial) policy_state_value
-          -> all_pairs_paths_valid topology (policy.(policy_state_decider) policy_state_value) paths.
+      Definition dynamic_policy_valid paths :=
+        let filtered_policy_sys := filter_transition_system policy.(policy_state_decider) policy.(policy_system) in
+        invariant filtered_policy_sys (fun current_state =>
+          all_pairs_paths_valid topology (policy.(policy_state_decider) current_state) paths
+        ).
 
       Definition controller_implements_policy {controller_state : Set} (controller : @network_controller controller_state) :=
-        forall (policy_and_controller_state : policy_state * controller_state),
-          let joined_sys := join_transition_systems policy.(policy_system) controller.(controller_system) in
-            trc
-              joined_sys.(Step)
-              joined_sys.(Initial)
-              policy_and_controller_state
-          -> valid_openflow_entries topology (policy.(policy_state_decider) policy_and_controller_state.(fst)) node_ips (controller.(controller_state_decider) policy_and_controller_state.(snd)).
+        let joined_sys := filter_transition_system (fun current_state next_flow =>
+
+          (* state only changes for flows that are allowed by the current policy *)
+          policy.(policy_state_decider) current_state.(fst) next_flow
+        ) (join_transition_systems policy.(policy_system) controller.(controller_system)) in
+        invariant joined_sys (fun policy_and_controller_state =>
+          let (policy_state, controller_state) := policy_and_controller_state in
+          valid_openflow_entries topology (policy.(policy_state_decider) policy_state) node_ips (controller.(controller_state_decider) controller_state)
+        ).
     End NetworkSystem.
 
     Lemma get_matching_action_forwards_to_correct_port : forall topology dec_next current_flow here hop_target port node_ips all_nodes,
@@ -1266,7 +1290,7 @@ Section Node.
 
     Theorem dynamic_controller_generator_validity : forall (policy_state : Set) topology (policy : @dynamic_network_policy policy_state) paths all_nodes node_ips,
       valid_topology topology
-        -> all_pairs_paths_valid_dynamic topology policy paths
+        -> dynamic_policy_valid topology policy paths
         -> Listing all_nodes
         -> Injective node_ips
         -> controller_implements_policy topology policy node_ips {|
@@ -1284,35 +1308,37 @@ Section Node.
           )
         |}.
     Proof.
-      unfold controller_implements_policy.
-      unfold all_pairs_paths_valid_dynamic.
+      unfold controller_implements_policy, dynamic_policy_valid, invariant.
       intros.
-      destruct (policy_and_controller_state).
+      destruct new_state.
       simpl in H3.
       assert (p = p0).
-      - destruct (policy.(policy_system)).
+      - destruct policy.(policy_system).
         clear - H3.
         dependent induction H3; try reflexivity.
         simpl in H3, IHtrc.
-        eapply IHtrc; reflexivity.
+        destruct (policy_state_decider policy Initial0 sent_flow); eapply IHtrc; reflexivity.
       - subst.
         apply openflow_rules_generator_validity; try assumption.
         apply H0.
-        destruct (policy.(policy_system)).
+        unfold filter_transition_system.
+        simpl.
+        destruct policy.(policy_system).
         clear - H3.
         simpl.
         simpl in H3.
         dependent induction H3; try apply TrcRefl.
-        eapply TrcFront with (sent_flow0 := sent_flow).
-        reflexivity.
-        apply IHtrc; reflexivity.
+        destruct_with_eqn (policy_state_decider policy Initial0 sent_flow).
+        + eapply TrcFront with (sent_flow0 := sent_flow); try reflexivity.
+          apply IHtrc; simpl; try rewrite Heqb; reflexivity.
+        + apply IHtrc; simpl; try rewrite Heqb; reflexivity.
     Qed.
 
     Definition dynamic_controller_generator
       {policy_state : Set}
       (topology : {t : network_topology | valid_topology t})
       (policy : @dynamic_network_policy policy_state)
-      (paths: {pairs_paths : all_pairs_paths | all_pairs_paths_valid_dynamic (proj1_sig topology) policy pairs_paths})
+      (paths: {pairs_paths : all_pairs_paths | dynamic_policy_valid (proj1_sig topology) policy pairs_paths})
       (all_nodes : {enumeration : list Node | Listing enumeration})
       (node_ips : {ips : node_ip_map | Injective ips})
     : {controller : @network_controller policy_state | controller_implements_policy (proj1_sig topology) policy (proj1_sig node_ips) controller}.
@@ -1407,7 +1433,7 @@ Section NetworkExample.
     example_topology:
 
         B ------> E
-      / | \       |
+      / | \       ↑
      A  |5 D <--- F
       \ | /
         C
@@ -1428,7 +1454,6 @@ Section NetworkExample.
     | C, D => Some (natToWord 16 3)
     | D, C => Some (natToWord 16 2)
     | F, D => Some (natToWord 16 1)
-    | E, F => Some (natToWord 16 1)
     | F, E => Some (natToWord 16 2)
     | _, _ => None
     end.
@@ -1440,27 +1465,23 @@ Section NetworkExample.
     | A, C => Some [C]
     | A, D => Some [B; D]
     | A, E => Some [B; E]
-    | A, F => Some [B; E; F]
+    | A, F => None
     | B, A => Some [A]
     | B, C => Some [C]
     | B, D => Some [D]
     | B, E => Some [E]
-    | B, F => Some [E; F]
+    | B, F => None
     | C, A => Some [A]
     | C, B => Some [B]
     | C, D => Some [D]
     | C, E => Some [A; B; E]
-    | C, F => Some [D; B; E; F]
+    | C, F => None
     | D, A => Some [C; A]
     | D, B => Some [B]
     | D, C => Some [C]
     | D, E => Some [C; A; B; E]
-    | D, F => Some [B; E; F]
-    | E, A => Some [F; D; B; A]
-    | E, B => Some [F; D; B]
-    | E, C => Some [F; D; C]
-    | E, D => Some [F; D]
-    | E, F => Some [F]
+    | D, F => None
+    | E, _ => None
     | F, A => Some [D; B; A]
     | F, B => Some [D; B]
     | F, C => Some [D; C]
@@ -1504,14 +1525,18 @@ Section NetworkExample.
     end.
 
   (*
-    Initial state: A can send to anywhere
-    After each successful packet from x to y, policy updates so y can also send to x
+    Initial state: A can send to anywhere that it can reach
+    After each successful packet from x to y, policy updates so y can also send to x, provided that y can reach x
   *)
   Definition example_dynamic_policy : @dynamic_network_policy ExampleVertex (list (ExampleVertex * ExampleVertex)) := {|
     policy_system := {|
       Initial := [(A, B); (A, C); (A, D)];
       Step := fun current_state last_flow =>
-        (last_flow.(Dest), last_flow.(Src)) :: current_state
+        if ExampleVertex_eq_dec F last_flow.(Src)
+        then current_state
+        else if ExampleVertex_eq_dec E last_flow.(Dest)
+        then current_state
+        else (last_flow.(Dest), last_flow.(Src)) :: current_state
     |};
     policy_state_decider := in_pair_list
   |}.
@@ -1531,9 +1556,9 @@ Section NetworkExample.
     | (n1, n2, n3, n4) => (natToWord 8 n1, natToWord 8 n2, natToWord 8 n3, natToWord 8 n4)
     end.
 
-  Definition example_all_pairs_paths_valid_dynamic : all_pairs_paths_valid_dynamic example_topology example_dynamic_policy example_all_pairs_paths.
+  Definition example_dynamic_policy_valid : dynamic_policy_valid example_topology example_dynamic_policy example_all_pairs_paths.
   Proof.
-    unfold all_pairs_paths_valid_dynamic, example_dynamic_policy.
+    unfold dynamic_policy_valid, filter_transition_system, example_dynamic_policy, invariant.
     simpl.
     intros.
     constructor; intros.
@@ -1541,7 +1566,37 @@ Section NetworkExample.
     - destruct current_flow.
       simpl.
       destruct_with_eqn (example_all_pairs_paths Src0 Dest0); try tauto.
-      destruct Src0, Dest0; discriminate.
+      set (policy_invariant := fix contains_valid_entries state := match state with
+      | [] => True
+      | (src, dest) :: cdr => src <> E /\ dest <> F /\ contains_valid_entries cdr
+      end).
+      remember [(A, B); (A, C); (A, D)] as old_state.
+      assert (policy_invariant old_state) by (rewrite Heqold_state; firstorder discriminate).
+      clear Heqold_state.
+      dependent induction H.
+      + dependent induction start.
+        * simpl in H0; discriminate.
+        * repeat match goal with
+          | [ H : policy_invariant (_ :: _) |- _ ] => simpl in H
+          | [ H : let (_, _) := ?a in _ |- _ ] => destruct a
+          | [ H : _ /\ _ |- _ ] => destruct H
+          end.
+          eapply IHstart; try eassumption.
+          simpl in H0.
+          destruct_with_eqn (ExampleVertex_eqb e Src0 && ExampleVertex_eqb e0 Dest0); try assumption.
+          assert (Src0 = e) by (destruct Src0, e; firstorder discriminate).
+          assert (Dest0 = e0) by (destruct Dest0, e0, (ExampleVertex_eqb e Src0); firstorder discriminate).
+          subst.
+          destruct e, e0; simpl in Heqo; try discriminate; tauto.
+      + apply IHtrc with (Src0 := Src0) (Dest0 := Dest0); try assumption.
+        rewrite <- H.
+        unfold policy_invariant in H2.
+        repeat match goal with
+        | [ H : ?inv ?a |- ?inv (if ?cond then _ else ?a) ] => destruct_with_eqn (cond); [ idtac | assumption ]
+        | [ H : ?inv ?a |- ?inv (if ?cond then ?a else _) ] => destruct_with_eqn (cond); [ assumption | idtac ]
+        | [ |- _ /\ _ ] => constructor; try assumption
+        | [ H : ?a <> ?b |- ?b <> ?a ] => congruence
+        end.
     - exists example_costs.
       unfold generates_decreasing_costs, only_positive_costs, example_costs.
       constructor; intros; repeat match goal with
@@ -1560,7 +1615,7 @@ Section NetworkExample.
     (list (ExampleVertex * ExampleVertex))
     ltac:(prove_valid_topology example_topology)
     example_dynamic_policy
-    (exist _ example_all_pairs_paths example_all_pairs_paths_valid_dynamic)
+    (exist _ example_all_pairs_paths example_dynamic_policy_valid)
     all_nodes
     ltac:(prove_injective_ips node_ips).
 End NetworkExample.
