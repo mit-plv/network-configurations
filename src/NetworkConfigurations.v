@@ -85,28 +85,35 @@ Section Node.
     | _ => False
     end.
 
-  Definition edge_costs := Node -> Node -> nat.
-  (* NOTE: All pairs of nodes have an edge cost, even
-     pairs that don't have an edge between them in the topology.
-     This is logically consistent (the costs for the pairs that
-     aren't in the topology won't get used), but perhaps unintuitive. *)
+  Definition edge_costs := Node -> Port -> nat.
 
-  Definition only_positive_costs (costs : edge_costs) := forall n1 n2,
-    costs n1 n2 > 0.
-
-  Fixpoint path_cost (costs : edge_costs) src path :=
-    match path with
-    | [] => 0
-    | car :: cdr => costs src car + path_cost costs car cdr
+  Definition only_positive_costs (topology : network_topology) (costs : edge_costs) := forall n1 n2,
+    match topology n1 n2 with
+    | Some port => costs n1 port > 0
+    | None => True
     end.
 
-  Definition generates_decreasing_costs (paths : all_pairs_paths) costs :=
-    only_positive_costs costs /\
+  Fixpoint path_cost topology (costs : edge_costs) src path :=
+    match path with
+    | [] => Some 0
+    | car :: cdr =>
+      match topology src car, path_cost topology costs car cdr with
+      | Some port, Some remaining_cost => Some (costs src port + remaining_cost)
+      | _, _ => None
+      end
+    end.
+
+  Definition generates_decreasing_costs topology (paths : all_pairs_paths) costs :=
+    only_positive_costs topology costs /\
     forall src dest,
       match paths src dest with
       | Some (hop_target :: cdr) =>
         match paths hop_target dest with
-        | Some path => path_cost costs hop_target path < path_cost costs src (hop_target :: cdr)
+        | Some path =>
+          match path_cost topology costs hop_target path, path_cost topology costs src (hop_target :: cdr) with
+          | Some remaining_cost, Some original_cost => remaining_cost < original_cost
+          | _, _ => False
+          end
         | None => False
         end
       | _ => True
@@ -134,7 +141,7 @@ Section Node.
        as an input based on environmental factors, then use it to generate
        a valid all-pairs paths function.) *)
     paths_move_closer_to_destination : exists (costs : edge_costs),
-      generates_decreasing_costs paths costs
+      generates_decreasing_costs topology paths costs
   }.
 
   Lemma all_pairs_paths_next_node_generator_creates_next_node_paths : forall paths topology policy current_flow hop_target,
@@ -150,126 +157,174 @@ Section Node.
     assert (H' := H).
     apply paths_move_closer_to_destination in H'.
     destruct H', H1.
-    remember (path_cost x hop_target l) as cost.
-    assert (match paths hop_target current_flow.(Dest) with | Some p => path_cost x hop_target p <= cost | _ => False end) by (rewrite Heqo; omega).
-    assert (cost = 0 -> hop_target = current_flow.(Dest)).
-    - intros.
-      subst.
-      destruct l.
-      + eapply paths_in_topology in H.
-        rewrite Heqo in H.
-        tauto.
-      + simpl in H4.
-        unfold only_positive_costs in H1.
-        specialize (H1 hop_target).
-        specialize (H1 n).
-        omega.
-    - clear Heqcost Heqo.
-      dependent induction cost generalizing hop_target; try (exists []; tauto).
-      clear H4.
-      destruct_with_eqn (paths hop_target current_flow.(Dest)); try tauto.
-      destruct l0; try (exists []; simpl; eapply paths_in_topology in H; rewrite Heqo in H; simpl in H; subst; reflexivity).
+    assert (if path_cost topology x hop_target l then True else False).
+    - destruct_with_eqn (path_cost topology x hop_target l); try tauto.
       specialize (H2 hop_target).
       specialize (H2 current_flow.(Dest)).
       rewrite Heqo in H2.
-      specialize (IHcost n).
-      destruct (paths n current_flow.(Dest)); try tauto.
-      assert (path_cost x n l1 <= cost) by omega.
-      apply IHcost in H4.
-      + destruct H4.
-        exists (n :: x0).
-        simpl.
-        constructor; try assumption.
-        unfold all_pairs_paths_next_node_generator.
-        constructor; try assumption.
-        rewrite Heqo.
-        reflexivity.
+      destruct l; try (simpl in Heqo0; discriminate).
+      repeat match goal with
+      | [ H : match ?x with | Some _ => _ | None => False end |- _ ] => destruct x; try tauto
+      | _ => discriminate
+      end.
+    - destruct_with_eqn (path_cost topology x hop_target l); try tauto.
+      assert (match paths hop_target current_flow.(Dest) with | Some p => match path_cost topology x hop_target p with | Some cost' => cost' <= n | _ => False end | _ => False end) by (rewrite Heqo, Heqo0; omega).
+      assert (n = 0 -> hop_target = current_flow.(Dest)).
       + intros.
         subst.
-        simpl in H3.
-        assert (x hop_target n > 0) by (apply H1).
-        assert (path_cost x n l0 = 0) by omega.
-        destruct l0; simpl in H6.
+        destruct l.
         * eapply paths_in_topology in H.
           rewrite Heqo in H.
-          simpl in H.
           tauto.
-        * assert (x n n0 > 0) by (apply H1).
+        * simpl in Heqo0.
+          unfold only_positive_costs in H1.
+          specialize (H1 hop_target).
+          specialize (H1 n).
+          destruct (topology hop_target n); try discriminate.
+          destruct (path_cost topology x n l); try discriminate.
+          assert (x hop_target p + n0 = 0) by (injection Heqo0; tauto).
           omega.
+      + clear Heqo0 Heqo H3.
+        dependent induction n generalizing hop_target; try (exists []; tauto).
+        clear H5.
+        destruct_with_eqn (paths hop_target current_flow.(Dest)); try tauto.
+        destruct l0; try (exists []; simpl; eapply paths_in_topology in H; rewrite Heqo in H; simpl in H; subst; reflexivity).
+        specialize (H2 hop_target).
+        specialize (H2 current_flow.(Dest)).
+        rewrite Heqo in H2.
+        specialize (IHn n0).
+        destruct (paths n0 current_flow.(Dest)); try tauto.
+        destruct_with_eqn (path_cost topology x n0 l1); try tauto.
+        destruct_with_eqn (path_cost topology x hop_target (n0 :: l0)); try tauto.
+        assert (n1 <= n) by omega.
+        apply IHn in H3.
+        * destruct H3.
+          exists (n0 :: x0).
+          simpl.
+          constructor; try assumption.
+          unfold all_pairs_paths_next_node_generator.
+          constructor; try assumption.
+          rewrite Heqo.
+          reflexivity.
+        * intros.
+          simpl in Heqo1.
+          assert (n1 = 0) by omega.
+          subst.
+          destruct_with_eqn (topology hop_target n0); try discriminate.
+          destruct_with_eqn (path_cost topology x n0 l0); try discriminate.
+          assert (x hop_target p + n = n2) by (injection Heqo1; tauto).
+          subst.
+          clear Heqo1 H3 IHn.
+          assert (x hop_target p > 0).
+          --unfold only_positive_costs in H1.
+            specialize (H1 hop_target).
+            specialize (H1 n0).
+            rewrite Heqo2 in H1.
+            assumption.
+          --destruct l0; simpl in Heqo.
+            ++eapply paths_in_topology in H.
+              rewrite Heqo in H.
+              simpl in H.
+              tauto.
+            ++simpl in Heqo3.
+              destruct_with_eqn (topology n0 n1); try discriminate.
+              destruct_with_eqn (path_cost topology x n1 l0); try discriminate.
+              assert (x n0 p0 + n2 = n) by (injection Heqo3; tauto).
+              subst.
+              enough (x n0 p0 > 0) by omega.
+              specialize (H1 n0).
+              specialize (H1 n1).
+              rewrite Heqo1 in H1.
+              assumption.
   Qed.
 
-  Fixpoint has_strictly_decreasing_costs (paths : all_pairs_paths) (costs : edge_costs) l dest bound :=
+  Fixpoint has_strictly_decreasing_costs topology (paths : all_pairs_paths) (costs : edge_costs) l dest bound :=
     match l with
     | [] => True
     | node :: cdr =>
       match paths node dest with
-      | Some l' => path_cost costs node l' < bound /\ has_strictly_decreasing_costs paths costs cdr dest (path_cost costs node l')
+      | Some l' =>
+        match path_cost topology costs node l' with
+        | Some cost => cost < bound /\ has_strictly_decreasing_costs topology paths costs cdr dest cost
+        | None => False
+        end
       | None => False
       end
     end.
 
-  Lemma strictly_decreasing_costs_strengthening : forall paths costs l dest small_bound big_bound,
-    has_strictly_decreasing_costs paths costs l dest small_bound
+  Lemma strictly_decreasing_costs_strengthening : forall topology paths costs l dest small_bound big_bound,
+    has_strictly_decreasing_costs topology paths costs l dest small_bound
       -> small_bound <= big_bound
-      -> has_strictly_decreasing_costs paths costs l dest big_bound.
+      -> has_strictly_decreasing_costs topology paths costs l dest big_bound.
   Proof.
     intros.
     destruct l; simpl; try tauto.
     simpl in H.
-    destruct (paths n dest); try tauto.
+    repeat match goal with
+    | [ H : match ?x with | Some _ => _ | None => False end |- _ ] => destruct x; try tauto
+    end.
     destruct H.
     constructor; try tauto; omega.
   Qed.
 
-  Lemma all_pairs_paths_generate_strictly_decreasing_costs : forall (paths : all_pairs_paths) costs topology policy here current_flow path path',
-    generates_decreasing_costs paths costs
+  Lemma all_pairs_paths_generate_strictly_decreasing_costs : forall (paths : all_pairs_paths) costs topology policy here current_flow path path' first_bound,
+    generates_decreasing_costs topology paths costs
       -> paths here current_flow.(Dest) = Some path'
+      -> path_cost topology costs here path' = Some first_bound
       -> is_next_node_path (all_pairs_paths_next_node_generator paths topology policy) path here current_flow
-      -> has_strictly_decreasing_costs paths costs path current_flow.(Dest) (path_cost costs here path').
+      -> has_strictly_decreasing_costs topology paths costs path current_flow.(Dest) first_bound.
   Proof.
     intros.
     dependent induction path generalizing here; try (simpl; tauto).
     simpl.
-    simpl in H1.
-    destruct H1.
-    unfold all_pairs_paths_next_node_generator in H1.
-    destruct H1.
-    rewrite H0 in H3.
+    simpl in H2.
+    destruct H2.
+    unfold all_pairs_paths_next_node_generator in H2.
+    destruct H2.
+    rewrite H0 in H4.
     destruct path'; try tauto.
     subst.
     assert (H' := H).
     destruct H'.
-    specialize (H4 here).
-    specialize (H4 current_flow.(Dest)).
-    rewrite H0 in H4.
+    specialize (H5 here).
+    specialize (H5 current_flow.(Dest)).
+    rewrite H0 in H5.
     destruct_with_eqn (paths n current_flow.(Dest)); try tauto.
+    destruct_with_eqn (path_cost topology costs n l); try tauto.
+    destruct_with_eqn (path_cost topology costs here (n :: path')); try tauto.
+    assert (n1 = first_bound) by (injection H1; tauto); subst.
     constructor; try assumption.
-    apply IHpath; assumption.
+    eapply IHpath; eassumption.
   Qed.
 
 
-  Lemma decreasing_costs_implies_nonmember : forall (paths : all_pairs_paths) costs path dest node path',
+  Lemma decreasing_costs_implies_nonmember : forall topology (paths : all_pairs_paths) costs path dest node path' first_bound,
     paths node dest = Some path'
-      -> has_strictly_decreasing_costs paths costs path dest (path_cost costs node path')
+      -> path_cost topology costs node path' = Some first_bound
+      -> has_strictly_decreasing_costs topology paths costs path dest first_bound
       -> ~In node path.
   Proof.
     intros.
     dependent induction path; intros; simpl; try tauto.
-    simpl in H0.
+    simpl in H1.
     destruct_with_eqn (paths a dest); try tauto.
-    destruct H0.
+    destruct_with_eqn (path_cost topology costs a l); try tauto.
+    destruct H1.
     unfold not.
     intros.
-    destruct H2.
+    destruct H3.
     - subst.
       rewrite Heqo in H.
       injection H.
       intros.
       subst.
+      rewrite Heqo0 in H0.
+      assert (n = first_bound) by (injection H0; intros; tauto).
       omega.
     - enough (~(In node path)) by tauto.
-      apply strictly_decreasing_costs_strengthening with (big_bound := path_cost costs node path') in H1; try omega.
-      eapply IHpath; eassumption.
+      eapply IHpath; try eassumption.
+      apply strictly_decreasing_costs_strengthening with (small_bound := n); try assumption.
+      omega.
   Qed.
 
   Lemma NoDup_single : forall A (el : A), NoDup [el].
@@ -344,18 +399,23 @@ Section Node.
         specialize (H2 current_flow.(Dest)).
         repeat rewrite Heqo in H2.
         simpl in H2.
+        destruct (topology here here); try tauto.
+        destruct (path_cost topology x here l); try tauto.
         omega.
       + enough (~(In here path)) by tauto.
         apply paths_move_closer_to_destination in H.
         destruct H.
-        eapply decreasing_costs_implies_nonmember with (costs := x); try eassumption.
         assert (H' := H).
+        unfold generates_decreasing_costs in H'.
         destruct H'.
         specialize (H4 here).
         specialize (H4 current_flow.(Dest)).
         rewrite Heqo in H4.
-        destruct_with_eqn (paths n current_flow.(Dest)); try tauto.
-        apply strictly_decreasing_costs_strengthening with (small_bound := path_cost x n l0); try omega.
+        repeat match goal with
+        | [ H : match ?x with | Some _ => _ | None => False end |- _ ] => destruct_with_eqn (x); try tauto
+        end.
+        eapply decreasing_costs_implies_nonmember with (costs := x); try eassumption.
+        apply strictly_decreasing_costs_strengthening with (small_bound := n0); try omega.
         eapply all_pairs_paths_generate_strictly_decreasing_costs; eassumption.
   Qed.
 
@@ -1497,10 +1557,10 @@ Section NetworkExample.
   path from F of [D; C; B; E]. However, if the (C, B) edge
   has a large cost, then the total cost of [C; A; B; E] is less
   than the cost of [D; C; B; E]. *)
-  Definition example_costs n1 n2 :=
-    match n1, n2 with
-    | C, B => 5
-    | _, _ => 1
+  Definition example_costs n1 port :=
+    match n1 with
+    | C => if weqb port (natToWord 16 2) then 5 else 1
+    | _ => 1
     end.
 
   Definition policy_satisfiable (policy : @static_network_policy ExampleVertex) := forall n1 n2,
