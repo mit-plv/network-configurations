@@ -1479,6 +1479,165 @@ Ltac enumerate_finite_set :=
   repeat constructor;
   firstorder discriminate.
 
+Fixpoint map_with_index' {A} {B} (f : A -> nat -> B) (l : list A) (start_index : nat) :=
+  match l with
+  | [] => []
+  | car :: cdr => (f car start_index) :: map_with_index' f cdr (S start_index)
+  end.
+
+Definition map_with_index {A} {B} (f : A -> nat -> B) (l : list A) := map_with_index' f l 0.
+
+Definition set_value_at {A} (lst : list (list A)) (i j : nat) (val : A) :=
+  map_with_index (fun row row_index =>
+    if row_index =? i
+    then map_with_index (fun entry col_index => if col_index =? j then val else entry) row
+    else row
+  ) lst.
+
+Definition get_value_at {A} (lst : list (list A)) (i j : nat) :=
+  match nth_error lst i with
+  | Some row =>
+    match nth_error row j with
+    | Some entry => Some entry
+    | None => None
+    end
+  | None => None
+  end.
+
+Definition distance_can_be_shortened (dists : list (list (option nat))) (i j k : nat) :=
+  match get_value_at dists i j, get_value_at dists i k, get_value_at dists k j with
+  | Some None, Some (Some i_k), Some (Some k_j) => Some (i_k + k_j)
+  | Some (Some i_j), Some (Some i_k), Some (Some k_j) => if i_k + k_j <? i_j then Some (i_k + k_j) else None
+  | _, _, _ => None
+  end.
+
+Fixpoint find_index {Node} (Node_eq_dec : forall (n1 n2 : Node), {n1 = n2} + {n1 <> n2}) nodes node :=
+  match nodes with
+  | [] => None
+  | car :: cdr =>
+    if Node_eq_dec car node
+    then Some 0
+    else match find_index Node_eq_dec cdr node with
+    | Some cdr_index => Some (S cdr_index)
+    | None => None
+    end
+  end.
+
+Fixpoint next_matrix_to_paths {Node} (Node_eq_dec : forall (n1 n2 : Node), {n1 = n2} + {n1 <> n2}) all_nodes max_length next_matrix nodeA nodeB :=
+  if Node_eq_dec nodeA nodeB
+  then Some []
+  else match max_length with
+  | 0 => None
+  | S max_length' =>
+    let indexA := find_index Node_eq_dec all_nodes nodeA in
+    let indexB := find_index Node_eq_dec all_nodes nodeB in
+    match indexA, indexB with
+    | Some iA, Some iB =>
+      match nth_error next_matrix iA with
+      | Some nodeA_row =>
+        match nth_error nodeA_row iB with
+        | Some (Some hop) =>
+          match next_matrix_to_paths Node_eq_dec all_nodes max_length' next_matrix hop nodeB with
+          | Some cdr_path => Some (hop :: cdr_path)
+          | None => None
+          end
+        | _ => None
+        end
+      | None => None
+      end
+    | _, _ => None
+    end
+  end.
+
+(* Implements the Floyd-Warshall algorithm *)
+Ltac generate_all_pairs_paths Node Node_eq_dec topology all_nodes costs :=
+  let nodes := (eval unfold all_nodes in all_nodes.(proj1_sig)) in
+  let dists := fresh "dists" in
+  let nexts := fresh "nexts" in
+  set (dists := map (fun n1 =>
+    map (fun n2 =>
+      if Node_eq_dec n1 n2
+      then Some 0
+      else match topology n1 n2 with
+      | Some port => Some (costs n1 port)
+      | None => None
+      end
+    ) nodes
+  ) nodes);
+  set (nexts := map (fun n1 =>
+    map (fun n2 =>
+      if Node_eq_dec n1 n2
+      then Some n1
+      else match topology n1 n2 with
+      | Some _ => Some n2
+      | None => None
+      end
+    ) nodes
+  ) nodes);
+  let num_nodes := eval compute in (length nodes) in
+  let k := fresh "k" in
+  set (k := 0);
+  repeat (
+    match (eval compute in k) with
+    | num_nodes => fail 1
+    | _ => idtac
+    end;
+
+    let i := fresh "i" in
+    set (i := 0);
+    repeat (
+      match (eval compute in i) with
+      | num_nodes => fail 1
+      | _ => idtac
+      end;
+
+      let j := fresh "j" in
+      set (j := 0);
+      repeat (
+        match (eval compute in j) with
+        | num_nodes => fail 1
+        | _ => idtac
+        end;
+
+        match eval compute in (distance_can_be_shortened dists i j k) with
+        | Some ?short_distance =>
+          let dists' := eval compute in (set_value_at dists i j (Some short_distance)) in (
+            clear dists;
+            set (dists := dists')
+          );
+          let nexts' := eval compute in (
+            set_value_at nexts i j (
+              match get_value_at nexts i k with
+              | Some v => v
+              | None => None
+              end
+            )
+          ) in (
+            clear nexts;
+            set (nexts := nexts')
+          )
+        | None => idtac
+        end;
+
+        let j' := eval compute in j in
+          clear j;
+          set (j := S j')
+      );
+      clear j;
+
+      let i' := eval compute in i in
+        clear i;
+        set (i := S i')
+    );
+    clear i;
+
+    let k' := eval compute in k in
+      clear k;
+      set (k := S k')
+  );
+  clear k;
+  exact (next_matrix_to_paths Node_eq_dec nodes num_nodes nexts).
+
 Section NetworkExample.
   Local Inductive ExampleVertex :=
   | A
@@ -1488,6 +1647,9 @@ Section NetworkExample.
   | E
   | F
   .
+
+  Definition all_nodes : {l : list ExampleVertex | Listing l} := ltac:(enumerate_finite_set).
+  Definition ExampleVertex_eq_dec : forall x y : ExampleVertex, {x = y} + {x <> y} := ltac:(prove_decidable_equality).
 
   (*
     example_topology:
@@ -1518,39 +1680,6 @@ Section NetworkExample.
     | _, _ => None
     end.
 
-  Local Definition example_all_pairs_paths n1 n2 :=
-    match n1, n2 with
-    | A, A | B, B | C, C | D, D | E, E | F, F => Some []
-    | A, B => Some [C; B]
-    | A, C => Some [C]
-    | A, D => Some [B; D]
-    | A, E => Some [B; E]
-    | A, F => None
-    | B, A => Some [A]
-    | B, C => Some [C]
-    | B, D => Some [D]
-    | B, E => Some [E]
-    | B, F => None
-    | C, A => Some [A]
-    | C, B => Some [B]
-    | C, D => Some [D]
-    | C, E => Some [A; B; E]
-    | C, F => None
-    | D, A => Some [C; A]
-    | D, B => Some [B]
-    | D, C => Some [C]
-    | D, E => Some [C; A; B; E]
-    | D, F => None
-    | E, _ => None
-    | F, A => Some [D; B; A]
-    | F, B => Some [D; B]
-    | F, C => Some [D; C]
-    | F, D => Some [D]
-
-    (* a route which won't actually get followed because D will reroute *)
-    | F, E => Some [D; C; B; E]
-    end.
-
   (* Giving all edges a cost of 1 would not satisfy the decreasing-costs
   constraint, because when routing F to E, node B would choose
   a path of [C; A; B; E] which is not shorter than the original expected
@@ -1563,6 +1692,8 @@ Section NetworkExample.
     | _ => 1
     end.
 
+  Local Definition example_all_pairs_paths : @all_pairs_paths ExampleVertex := ltac:(generate_all_pairs_paths ExampleVertex ExampleVertex_eq_dec example_topology all_nodes example_costs).
+
   Definition policy_satisfiable (policy : @static_network_policy ExampleVertex) := forall n1 n2,
     policy {| Src := n1; Dest := n2 |} = true -> example_all_pairs_paths n1 n2 <> None.
 
@@ -1572,9 +1703,6 @@ Section NetworkExample.
     | A, _ | _, A | F, _ => true
     | _, _ => false
     end.
-
-  Definition ExampleVertex_eq_dec : forall (x y : ExampleVertex), {x = y} + {x <> y} :=
-    ltac:(prove_decidable_equality).
 
   Definition ExampleVertex_eqb x y := if ExampleVertex_eq_dec x y then true else false.
 
@@ -1667,11 +1795,9 @@ Section NetworkExample.
       end.
   Qed.
 
-  Definition all_nodes : {l : list ExampleVertex | Listing l} := ltac:(enumerate_finite_set).
-
   Definition generated_dynamic_controller := @dynamic_controller_generator
     ExampleVertex
-    ltac:(prove_decidable_equality)
+    ExampleVertex_eq_dec
     (list (ExampleVertex * ExampleVertex))
     ltac:(prove_valid_topology example_topology)
     example_dynamic_policy
