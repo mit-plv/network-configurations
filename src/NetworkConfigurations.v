@@ -849,12 +849,12 @@ Section Node.
         Step := fun current_state next_flow => (Step sys1 current_state.(fst) next_flow, Step sys2 current_state.(snd) next_flow)
       |}.
 
-    Inductive trc {state : Set} {step : state -> flow -> state} : state -> state -> Prop :=
-    | TrcRefl : forall (start : state), trc start start
+    Inductive trc {state : Set} (step : state -> flow -> state) : state -> state -> Prop :=
+    | TrcRefl : forall (start : state), trc step start start
     | TrcFront : forall start mid dest sent_flow,
       step start sent_flow = mid
-        -> trc mid dest
-        -> trc start dest
+        -> trc step mid dest
+        -> trc step start dest
     .
 
     Arguments trc {state} step.
@@ -862,6 +862,14 @@ Section Node.
     Definition invariant {state : Set} (sys : flow_transition_system state) (condition : state -> Prop) := forall new_state,
       trc sys.(Step) sys.(Initial) new_state
         -> condition new_state.
+
+    Lemma invariant_weakening {state : Set} : forall sys (weak_condition strong_condition : state -> Prop),
+      invariant sys strong_condition
+        -> (forall s, strong_condition s -> weak_condition s)
+        -> invariant sys weak_condition.
+    Proof.
+      unfold invariant; eauto.
+    Qed.
 
     Record dynamic_network_policy {policy_state : Set} := {
       policy_system : flow_transition_system policy_state;
@@ -880,7 +888,7 @@ Section Node.
 
     Lemma filter_transition_system_trc {state : Set} : forall predicate (sys : flow_transition_system state) new_state,
       let filtered_sys := filter_transition_system predicate sys in
-      trc filtered_sys.(Step) sys.(Initial) new_state
+      trc filtered_sys.(Step) filtered_sys.(Initial) new_state
         -> trc sys.(Step) sys.(Initial) new_state.
     Proof.
       intros.
@@ -1638,6 +1646,85 @@ Ltac generate_all_pairs_paths Node Node_eq_dec topology all_nodes costs :=
   clear k;
   exact (next_matrix_to_paths Node_eq_dec nodes num_nodes nexts).
 
+Ltac prove_dynamic_policy_valid Node topology policy costs Node_eq_dec all_nodes paths policy_invariant :=
+  let invariant_implies_path_exists := fresh "invariant_implies_path_exists" in
+  let invariant_initial := fresh "invariant_initial" in
+  let invariant_step := fresh "invariant_step" in
+  assert (invariant_implies_path_exists : forall st current_flow,
+    policy_invariant st
+      -> policy_state_decider policy st current_flow = true
+      -> paths current_flow.(Src) current_flow.(Dest) = None
+      -> False
+  );
+  [
+    idtac |
+    assert (invariant_initial : policy_invariant policy.(policy_system).(Initial));
+    [
+      clear |
+      assert (invariant_step : forall st current_flow,
+        policy_invariant st
+          -> policy.(policy_state_decider) st current_flow = true
+          -> policy_invariant (policy.(policy_system).(Step) st current_flow)
+      ); [clear | idtac]
+    ]
+  ];
+  [ idtac | idtac | idtac |
+    apply exist with (x := paths);
+    apply invariant_weakening with (strong_condition := policy_invariant);
+    match goal with
+    | [ |- invariant _ policy_invariant ] =>
+      unfold invariant;
+      intros;
+      unfold filter_transition_system in *;
+      let start := fresh "start" in
+      let Heqstart := fresh "Heqstart" in
+      remember policy.(policy_system).(Initial) as start eqn:Heqstart;
+      clear Heqstart;
+      match goal with
+      | [ H : trc _ _ _ |- _ ] =>
+        simpl in H;
+        dependent induction H;
+        [ apply invariant_initial | idtac ];
+        subst;
+        match goal with
+        | [ H : ?inv (if ?cond then _ else _) -> ?inv ?dest |- ?inv ?dest ] =>
+          apply H;
+          destruct_with_eqn (cond); try assumption;
+          apply invariant_step; assumption
+        | _ => idtac "in"
+        end
+      | _ => idtac "out"
+      end
+    | [ |- forall state, policy_invariant state -> all_pairs_paths_valid _ _ _ ] =>
+      intros;
+      constructor;
+      intros;
+      match goal with
+      | [ |- match paths _ _ with | Some _ => _ | None => True end ] =>
+        repeat match goal with
+        | [ n : Node |- _ ] => destruct n
+        end;
+        simpl;
+        tauto
+      | [ |- match paths ?current_flow.(Src) ?current_flow.(Dest) with | Some _ => True | None => False end ] =>
+        destruct_with_eqn (paths current_flow.(Src) current_flow.(Dest));
+        [ tauto | idtac ];
+        destruct current_flow;
+        eapply invariant_implies_path_exists;
+        eassumption
+      | [ |- exists x, generates_decreasing_costs topology paths x ] =>
+        exists costs;
+        constructor;
+        unfold only_positive_costs;
+        intros;
+        repeat match goal with
+        | [ n : Node |- _ ] => destruct n; simpl
+        end;
+        intuition
+      end
+    end
+  ].
+
 Section NetworkExample.
   Local Inductive ExampleVertex :=
   | A
@@ -1729,6 +1816,31 @@ Section NetworkExample.
     policy_state_decider := in_pair_list
   |}.
 
+  Definition verified_example_paths : {paths : @all_pairs_paths ExampleVertex | dynamic_policy_valid example_topology example_dynamic_policy paths}.
+  Proof.
+    prove_dynamic_policy_valid ExampleVertex example_topology example_dynamic_policy example_costs ExampleVertex_eq_dec all_nodes example_all_pairs_paths (fix contains_valid_entries state := match state with
+    | [] => True
+    | (src, dest) :: cdr => src <> E /\ dest <> F /\ contains_valid_entries cdr
+    end); intros.
+    - unfold example_dynamic_policy in *; simpl in *; destruct current_flow; dependent induction st; try discriminate; simpl in *.
+      repeat match goal with
+      | [ H : let (_, _) := ?a in _ |- _ ] => destruct a
+      | [ H : _ || _ = true |- _ ] => rewrite orb_true_iff in H
+      | [ H : _ && _ = true |- _ ] => rewrite andb_true_iff in H
+      | [ H : _ /\ _ |- _ ] => destruct H
+      | [ H : _ \/ _ |- _ ] => destruct H
+      | [ H : ExampleVertex_eqb ?a ?b = true |- _ ] => assert (a = b) by (destruct a, b; simpl in H; try reflexivity; discriminate); clear H; subst
+      end; simpl in *; eapply IHst; try eassumption; repeat match goal with
+      | [ x : ExampleVertex |- _ ] => destruct x
+      end; try discriminate; tauto.
+    - firstorder discriminate.
+    - repeat match goal with
+    | [ f : flow |- _ ] => destruct f
+    | [ x : ExampleVertex |- _ ] => destruct x; simpl
+    | [ |- _ /\ _ ] => constructor
+    end; congruence.
+  Defined.
+
   Definition example_node_ips_nat node :=
     match node with
     | A => (10, 0, 0, 1)
@@ -1744,64 +1856,13 @@ Section NetworkExample.
     | (n1, n2, n3, n4) => (natToWord 8 n1, natToWord 8 n2, natToWord 8 n3, natToWord 8 n4)
     end.
 
-  Definition example_dynamic_policy_valid : dynamic_policy_valid example_topology example_dynamic_policy example_all_pairs_paths.
-  Proof.
-    unfold dynamic_policy_valid, filter_transition_system, example_dynamic_policy, invariant.
-    simpl.
-    intros.
-    constructor; intros.
-    - destruct src, dest; unfold example_topology; simpl; tauto.
-    - destruct current_flow.
-      simpl.
-      destruct_with_eqn (example_all_pairs_paths Src0 Dest0); try tauto.
-      set (policy_invariant := fix contains_valid_entries state := match state with
-      | [] => True
-      | (src, dest) :: cdr => src <> E /\ dest <> F /\ contains_valid_entries cdr
-      end).
-      remember [(A, B); (A, C); (A, D)] as old_state.
-      assert (policy_invariant old_state) by (rewrite Heqold_state; firstorder discriminate).
-      clear Heqold_state.
-      dependent induction H.
-      + dependent induction start.
-        * simpl in H0; discriminate.
-        * repeat match goal with
-          | [ H : policy_invariant (_ :: _) |- _ ] => simpl in H
-          | [ H : let (_, _) := ?a in _ |- _ ] => destruct a
-          | [ H : _ /\ _ |- _ ] => destruct H
-          end.
-          eapply IHstart; try eassumption.
-          simpl in H0.
-          destruct_with_eqn (ExampleVertex_eqb e Src0 && ExampleVertex_eqb e0 Dest0); try assumption.
-          assert (Src0 = e) by (destruct Src0, e; firstorder discriminate).
-          assert (Dest0 = e0) by (destruct Dest0, e0, (ExampleVertex_eqb e Src0); firstorder discriminate).
-          subst.
-          destruct e, e0; simpl in Heqo; try discriminate; tauto.
-      + apply IHtrc with (Src0 := Src0) (Dest0 := Dest0); try assumption.
-        rewrite <- H.
-        unfold policy_invariant in H2.
-        repeat match goal with
-        | [ H : ?inv ?a |- ?inv (if ?cond then _ else ?a) ] => destruct_with_eqn (cond); [ idtac | assumption ]
-        | [ H : ?inv ?a |- ?inv (if ?cond then ?a else _) ] => destruct_with_eqn (cond); [ assumption | idtac ]
-        | [ |- _ /\ _ ] => constructor; try assumption
-        | [ H : ?a <> ?b |- ?b <> ?a ] => congruence
-        end.
-    - exists example_costs.
-      unfold generates_decreasing_costs, only_positive_costs, example_costs.
-      constructor; intros; repeat match goal with
-      | [ n : ExampleVertex |- _ ] => destruct n
-      | _ => tauto
-      | _ => omega
-      | _ => simpl
-      end.
-  Qed.
-
   Definition generated_dynamic_controller := @dynamic_controller_generator
     ExampleVertex
     ExampleVertex_eq_dec
     (list (ExampleVertex * ExampleVertex))
     ltac:(prove_valid_topology example_topology)
     example_dynamic_policy
-    (exist _ example_all_pairs_paths example_dynamic_policy_valid)
+    verified_example_paths
     all_nodes
     ltac:(prove_injective_ips node_ips).
 End NetworkExample.
