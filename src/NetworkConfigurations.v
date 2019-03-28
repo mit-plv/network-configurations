@@ -18,9 +18,13 @@ Section Node.
 
   Definition network_topology := Node -> Node -> option Port.
   Definition valid_topology (topology : network_topology) := forall node outgoing1 outgoing2,
-    match topology node outgoing1, topology node outgoing2 with
-    | Some port1, Some port2 => port1 = port2 -> outgoing1 = outgoing2
-    | _, _ => True
+    match topology node outgoing1 with
+    | Some port1 => port1 <> (natToWord 16 0) /\
+      match topology node outgoing2 with
+      | Some port2 => port1 = port2 -> outgoing1 = outgoing2
+      | None => True
+      end
+    | None => True
     end.
 
   Definition static_network_policy := flow -> bool.
@@ -1441,7 +1445,7 @@ Ltac prove_valid_topology topology :=
   end;
   simpl;
   try reflexivity;
-  try discriminate.
+  try firstorder discriminate.
 
 Ltac prove_injective_ips node_ips :=
   let Node := match goal with
