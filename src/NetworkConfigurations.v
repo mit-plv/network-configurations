@@ -19,7 +19,7 @@ Section Node.
   Definition network_topology := Node -> Node -> option Port.
   Definition valid_topology (topology : network_topology) := forall node outgoing1 outgoing2,
     match topology node outgoing1 with
-    | Some port1 => port1 <> (natToWord 16 0) /\
+    | Some port1 => port1 <> (natToWord 16 0) /\ port1 <> (natToWord 16 99) /\
       match topology node outgoing2 with
       | Some port2 => port1 = port2 -> outgoing1 = outgoing2
       | None => True
