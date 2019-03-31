@@ -7,46 +7,65 @@ Require Import ZArith.
 Require Import bbv.Word.
 
 Section Node.
-  Context {Node : Set}.
+  Context {Switch : Set}.
+  Context {Host : Set}.
+
+  Inductive Node :=
+  | SwitchNode : Switch -> Node
+  | HostNode : Host -> Node
+  .
+
   Definition Port : Set := word 16.
   Opaque Port.
 
   Record flow := {
-    Src : Node;
-    Dest : Node
+    Src : Host;
+    Dest : Host
   }.
 
   Definition network_topology := Node -> Node -> option Port.
-  Definition valid_topology (topology : network_topology) := forall node outgoing1 outgoing2,
-    match topology node outgoing1 with
-    | Some port1 => port1 <> (natToWord 16 0) /\ port1 <> (natToWord 16 99) /\
-      match topology node outgoing2 with
-      | Some port2 => port1 = port2 -> outgoing1 = outgoing2
+
+  Record valid_topology (topology : network_topology) := {
+    no_direct_host_links : forall host1 host2,
+      topology (HostNode host1) (HostNode host2) = None;
+    no_duplicate_ports : forall node outgoing1 outgoing2,
+      match topology node outgoing1, topology node outgoing2 with
+      | Some port1, Some port2 => port1 = port2 -> outgoing1 = outgoing2
+      | _, _ => True
+      end;
+    valid_port_numbers : forall switch1 node2,
+      match topology (SwitchNode switch1) node2 with
+      | Some port => port <> (natToWord 16 0)
       | None => True
-      end
-    | None => True
-    end.
+      end;
+    no_isolated_hosts : forall host,
+      exists switch,
+        if topology (HostNode host) (SwitchNode switch)
+        then True
+        else False
+  }.
 
   Definition static_network_policy := flow -> bool.
 
-  Definition next_node := Node -> flow -> Node -> Prop.
+  Definition next_node := Switch -> flow -> Node -> Prop.
 
   Fixpoint is_next_node_path (next : next_node) path here current_flow :=
     match path with
-    | [] => here = current_flow.(Dest)
+    | [] => next here current_flow (HostNode current_flow.(Dest))
     | hop_target :: cdr =>
-        next here current_flow hop_target /\
+        next here current_flow (SwitchNode hop_target) /\
         is_next_node_path next cdr hop_target current_flow
     end.
 
   Record next_node_valid (topology : network_topology) (policy : static_network_policy) (next : next_node) := {
     all_hops_in_topology : forall here current_flow hop_target,
-      next here current_flow hop_target -> if topology here hop_target then True else False;
+      next here current_flow hop_target -> if topology (SwitchNode here) hop_target then True else False;
 
-    path_exists_only_for_valid_flows : forall current_flow,
-      (policy current_flow = true \/ current_flow.(Src) = current_flow.(Dest)) <->
-      exists path,
-        is_next_node_path next path current_flow.(Src) current_flow;
+    path_exists_only_for_valid_flows : forall current_flow first_switch port,
+      topology (HostNode current_flow.(Src)) (SwitchNode first_switch) = Some port
+        ->((policy current_flow = true) <->
+          exists path,
+            is_next_node_path next path first_switch current_flow);
 
     no_black_holes : forall here current_flow hop_target,
       (* TODO: Should this only be a requirement when a policy allows the flow?
@@ -54,26 +73,33 @@ Section Node.
          the first hop in the network, which limits some implementation choices.
       *)
       next here current_flow hop_target
-        -> exists path, is_next_node_path next path hop_target current_flow;
+        ->
+          match hop_target with
+          | HostNode dest =>
+            dest = current_flow.(Dest)
+          | SwitchNode next_switch =>
+            exists path,
+              is_next_node_path next path next_switch current_flow
+          end;
 
     all_paths_acyclic : forall path here current_flow,
       is_next_node_path next path here current_flow -> NoDup (here :: path)
   }.
 
-  Definition dec_next_node := Node -> flow -> option Node.
+  Definition dec_next_node := Switch -> flow -> option Node.
 
   Definition dec_next_node_valid (topology : network_topology) (policy : static_network_policy) (dec_next : dec_next_node) :=
     next_node_valid topology policy (fun here current_flow hop_target => dec_next here current_flow = Some hop_target).
 
   Fixpoint is_path_in_topology (topology : network_topology) src dest path :=
     match path with
-    | [] => src = dest
+    | [] => if topology (SwitchNode src) (HostNode dest) then True else False
     | hop_target :: cdr =>
-      (if topology src hop_target then True else False) /\
+      (if topology (SwitchNode src) (SwitchNode hop_target) then True else False) /\
       is_path_in_topology topology hop_target dest cdr
     end.
 
-  Definition all_pairs_paths := Node -> Node -> option (list Node).
+  Definition all_pairs_paths := Switch -> Host -> option (list Switch).
 
   Definition all_pairs_paths_next_node_generator
     (paths : all_pairs_paths)
@@ -85,7 +111,8 @@ Section Node.
   :=
     policy current_flow = true /\
     match paths here current_flow.(Dest) with
-    | Some (hop_target' :: _) => hop_target = hop_target'
+    | Some (hop_target' :: _) => hop_target = (SwitchNode hop_target')
+    | Some [] => hop_target = (HostNode current_flow.(Dest))
     | _ => False
     end.
 
@@ -97,12 +124,16 @@ Section Node.
     | None => True
     end.
 
-  Fixpoint path_cost topology (costs : edge_costs) src path :=
+  Fixpoint path_cost (topology : network_topology) (costs : edge_costs) src dest (path : list Switch) :=
     match path with
-    | [] => Some 0
+    | [] =>
+      match topology (SwitchNode src) (HostNode dest) with
+      | Some port => Some (costs (SwitchNode src) port)
+      | None => None
+      end
     | car :: cdr =>
-      match topology src car, path_cost topology costs car cdr with
-      | Some port, Some remaining_cost => Some (costs src port + remaining_cost)
+      match topology (SwitchNode src) (SwitchNode car), path_cost topology costs car dest cdr with
+      | Some port, Some remaining_cost => Some (costs (SwitchNode src) port + remaining_cost)
       | _, _ => None
       end
     end.
@@ -114,7 +145,7 @@ Section Node.
       | Some (hop_target :: cdr) =>
         match paths hop_target dest with
         | Some path =>
-          match path_cost topology costs hop_target path, path_cost topology costs src (hop_target :: cdr) with
+          match path_cost topology costs hop_target dest path, path_cost topology costs src dest (hop_target :: cdr) with
           | Some remaining_cost, Some original_cost => remaining_cost < original_cost
           | _, _ => False
           end
@@ -129,10 +160,12 @@ Section Node.
       | Some path => is_path_in_topology topology src dest path
       | _ => True
       end;
-    paths_exist_for_valid_flows : forall current_flow,
+
+    paths_exist_for_valid_flows : forall current_flow first_switch port,
       policy current_flow = true
+        -> topology (HostNode current_flow.(Src)) (SwitchNode first_switch) = Some port
         ->
-          match paths current_flow.(Src) current_flow.(Dest) with
+          match paths first_switch current_flow.(Dest) with
           | Some _ => True
           | None => False
           end;
@@ -161,94 +194,84 @@ Section Node.
     assert (H' := H).
     apply paths_move_closer_to_destination in H'.
     destruct H', H1.
-    assert (if path_cost topology x hop_target l then True else False).
-    - destruct_with_eqn (path_cost topology x hop_target l); try tauto.
+    assert (if path_cost topology x hop_target current_flow.(Dest) l then True else False).
+    - destruct_with_eqn (path_cost topology x hop_target current_flow.(Dest) l); try tauto.
       specialize (H2 hop_target).
       specialize (H2 current_flow.(Dest)).
       rewrite Heqo in H2.
-      destruct l; try (simpl in Heqo0; discriminate).
-      repeat match goal with
-      | [ H : match ?x with | Some _ => _ | None => False end |- _ ] => destruct x; try tauto
-      | _ => discriminate
-      end.
-    - destruct_with_eqn (path_cost topology x hop_target l); try tauto.
-      assert (match paths hop_target current_flow.(Dest) with | Some p => match path_cost topology x hop_target p with | Some cost' => cost' <= n | _ => False end | _ => False end) by (rewrite Heqo, Heqo0; omega).
-      assert (n = 0 -> hop_target = current_flow.(Dest)).
-      + intros.
-        subst.
-        destruct l.
-        * eapply paths_in_topology in H.
+      destruct l.
+      + simpl in Heqo0.
+        destruct_with_eqn (topology (SwitchNode hop_target) (HostNode current_flow.(Dest))); try discriminate.
+        apply paths_in_topology with (src := hop_target) (dest := current_flow.(Dest)) in H.
+        rewrite Heqo in H.
+        simpl in H.
+        rewrite Heqo1 in H.
+        tauto.
+      + repeat match goal with
+        | [ H : match ?x with | Some _ => _ | None => False end |- _ ] => destruct x; try tauto
+        | _ => discriminate
+        end.
+    - destruct_with_eqn (path_cost topology x hop_target current_flow.(Dest) l); try tauto.
+      assert (match paths hop_target current_flow.(Dest) with
+      | Some p =>
+        match path_cost topology x hop_target current_flow.(Dest) p with
+        | Some cost' => cost' <= n
+        | _ => False
+        end
+      | _ => False
+      end) by (rewrite Heqo, Heqo0; omega).
+      clear Heqo0 Heqo H3.
+      dependent induction n generalizing hop_target.
+      + destruct_with_eqn (paths hop_target current_flow.(Dest)); try tauto.
+        destruct_with_eqn (path_cost topology x hop_target current_flow.(Dest) l0); try tauto.
+        destruct l0.
+        * apply paths_in_topology with (src := hop_target) (dest := current_flow.(Dest)) in H.
           rewrite Heqo in H.
-          tauto.
-        * simpl in Heqo0.
-          unfold only_positive_costs in H1.
-          specialize (H1 hop_target).
-          specialize (H1 n).
-          destruct (topology hop_target n); try discriminate.
-          destruct (path_cost topology x n l); try discriminate.
-          assert (x hop_target p + n0 = 0) by (injection Heqo0; tauto).
+          simpl in Heqo0, H.
+          destruct_with_eqn (topology (SwitchNode hop_target) (HostNode current_flow.(Dest))); try tauto.
+          assert (x (SwitchNode hop_target) p = n) by congruence.
+          subst.
+          specialize (H1 (SwitchNode hop_target)).
+          specialize (H1 (HostNode current_flow.(Dest))).
+          rewrite Heqo1 in H1.
           omega.
-      + clear Heqo0 Heqo H3.
-        dependent induction n generalizing hop_target; try (exists []; tauto).
-        clear H5.
-        destruct_with_eqn (paths hop_target current_flow.(Dest)); try tauto.
-        destruct l0; try (exists []; simpl; eapply paths_in_topology in H; rewrite Heqo in H; simpl in H; subst; reflexivity).
+        * simpl in Heqo0.
+          destruct_with_eqn (topology (SwitchNode hop_target) (SwitchNode s)); try discriminate.
+          destruct (path_cost topology x s current_flow.(Dest) l0); try discriminate.
+          specialize (H1 (SwitchNode hop_target)).
+          specialize (H1 (SwitchNode s)).
+          rewrite Heqo1 in H1.
+          injection Heqo0; intros.
+          omega.
+      + destruct_with_eqn (paths hop_target current_flow.(Dest)); try tauto.
+        destruct l0; try (exists []; constructor; try assumption; rewrite Heqo; reflexivity).
         specialize (H2 hop_target).
         specialize (H2 current_flow.(Dest)).
         rewrite Heqo in H2.
-        specialize (IHn n0).
-        destruct (paths n0 current_flow.(Dest)); try tauto.
-        destruct_with_eqn (path_cost topology x n0 l1); try tauto.
-        destruct_with_eqn (path_cost topology x hop_target (n0 :: l0)); try tauto.
-        assert (n1 <= n) by omega.
+        specialize (IHn s).
+        destruct (paths s current_flow.(Dest)); try tauto.
+        destruct_with_eqn (path_cost topology x s current_flow.(Dest) l1); try tauto.
+        destruct_with_eqn (path_cost topology x hop_target current_flow.(Dest) (s :: l0)); try tauto.
+        simpl in Heqo1.
+        assert (n0 <= n) by omega.
         apply IHn in H3.
         * destruct H3.
-          exists (n0 :: x0).
+          exists (s :: x0).
           simpl.
           constructor; try assumption.
           unfold all_pairs_paths_next_node_generator.
           constructor; try assumption.
           rewrite Heqo.
           reflexivity.
-        * intros.
-          simpl in Heqo1.
-          assert (n1 = 0) by omega.
-          subst.
-          destruct_with_eqn (topology hop_target n0); try discriminate.
-          destruct_with_eqn (path_cost topology x n0 l0); try discriminate.
-          assert (x hop_target p + n = n2) by (injection Heqo1; tauto).
-          subst.
-          clear Heqo1 H3 IHn.
-          assert (x hop_target p > 0).
-          --unfold only_positive_costs in H1.
-            specialize (H1 hop_target).
-            specialize (H1 n0).
-            rewrite Heqo2 in H1.
-            assumption.
-          --destruct l0; simpl in Heqo.
-            ++eapply paths_in_topology in H.
-              rewrite Heqo in H.
-              simpl in H.
-              tauto.
-            ++simpl in Heqo3.
-              destruct_with_eqn (topology n0 n1); try discriminate.
-              destruct_with_eqn (path_cost topology x n1 l0); try discriminate.
-              assert (x n0 p0 + n2 = n) by (injection Heqo3; tauto).
-              subst.
-              enough (x n0 p0 > 0) by omega.
-              specialize (H1 n0).
-              specialize (H1 n1).
-              rewrite Heqo1 in H1.
-              assumption.
   Qed.
 
   Fixpoint has_strictly_decreasing_costs topology (paths : all_pairs_paths) (costs : edge_costs) l dest bound :=
     match l with
     | [] => True
-    | node :: cdr =>
-      match paths node dest with
+    | switch :: cdr =>
+      match paths switch dest with
       | Some l' =>
-        match path_cost topology costs node l' with
+        match path_cost topology costs switch dest l' with
         | Some cost => cost < bound /\ has_strictly_decreasing_costs topology paths costs cdr dest cost
         | None => False
         end
@@ -274,7 +297,7 @@ Section Node.
   Lemma all_pairs_paths_generate_strictly_decreasing_costs : forall (paths : all_pairs_paths) costs topology policy here current_flow path path' first_bound,
     generates_decreasing_costs topology paths costs
       -> paths here current_flow.(Dest) = Some path'
-      -> path_cost topology costs here path' = Some first_bound
+      -> path_cost topology costs here current_flow.(Dest) path' = Some first_bound
       -> is_next_node_path (all_pairs_paths_next_node_generator paths topology policy) path here current_flow
       -> has_strictly_decreasing_costs topology paths costs path current_flow.(Dest) first_bound.
   Proof.
@@ -286,17 +309,17 @@ Section Node.
     unfold all_pairs_paths_next_node_generator in H2.
     destruct H2.
     rewrite H0 in H4.
-    destruct path'; try tauto.
-    subst.
+    destruct path'; try discriminate.
+    assert (a = s) by congruence; subst.
     assert (H' := H).
     destruct H'.
-    specialize (H5 here).
-    specialize (H5 current_flow.(Dest)).
-    rewrite H0 in H5.
-    destruct_with_eqn (paths n current_flow.(Dest)); try tauto.
-    destruct_with_eqn (path_cost topology costs n l); try tauto.
-    destruct_with_eqn (path_cost topology costs here (n :: path')); try tauto.
-    assert (n1 = first_bound) by (injection H1; tauto); subst.
+    specialize (H6 here).
+    specialize (H6 current_flow.(Dest)).
+    rewrite H0 in H6.
+    destruct_with_eqn (paths s current_flow.(Dest)); try tauto.
+    destruct_with_eqn (path_cost topology costs s current_flow.(Dest) l); try tauto.
+    destruct_with_eqn (path_cost topology costs here current_flow.(Dest) (s :: path')); try tauto.
+    assert (n0 = first_bound) by (injection H1; tauto); subst.
     constructor; try assumption.
     eapply IHpath; eassumption.
   Qed.
@@ -304,7 +327,7 @@ Section Node.
 
   Lemma decreasing_costs_implies_nonmember : forall topology (paths : all_pairs_paths) costs path dest node path' first_bound,
     paths node dest = Some path'
-      -> path_cost topology costs node path' = Some first_bound
+      -> path_cost topology costs node dest path' = Some first_bound
       -> has_strictly_decreasing_costs topology paths costs path dest first_bound
       -> ~In node path.
   Proof.
@@ -312,7 +335,7 @@ Section Node.
     dependent induction path; intros; simpl; try tauto.
     simpl in H1.
     destruct_with_eqn (paths a dest); try tauto.
-    destruct_with_eqn (path_cost topology costs a l); try tauto.
+    destruct_with_eqn (path_cost topology costs a dest l); try tauto.
     destruct H1.
     unfold not.
     intros.
@@ -350,61 +373,57 @@ Section Node.
       destruct H0.
       apply paths_in_topology with (src := here) (dest := current_flow.(Dest)) in H.
       destruct (paths here current_flow.(Dest)); try tauto.
-      destruct l; try tauto.
-      subst.
+      destruct l; subst; try assumption.
       simpl in H.
       tauto.
     - constructor.
       + intros.
-        destruct H0.
-        * apply all_pairs_paths_next_node_generator_creates_next_node_paths; try assumption.
-          eapply paths_exist_for_valid_flows in H; eassumption.
-        * exists [].
-          simpl.
-          assumption.
+        apply all_pairs_paths_next_node_generator_creates_next_node_paths; try assumption.
+        eapply paths_exist_for_valid_flows in H; try eassumption.
       + intros.
-        destruct H0.
-        destruct x; simpl in H0; try tauto.
-        destruct H0.
-        unfold all_pairs_paths_next_node_generator in H0.
-        tauto.
+        destruct H1.
+        destruct x; simpl in H1; unfold all_pairs_paths_next_node_generator in H1; tauto.
     - unfold all_pairs_paths_next_node_generator in H0.
       destruct H0.
-      apply all_pairs_paths_next_node_generator_creates_next_node_paths; try tauto.
-      destruct_with_eqn (paths here current_flow.(Dest)); try tauto.
-      destruct l; try tauto.
-      subst.
-      apply paths_move_closer_to_destination in H.
-      destruct H.
-      destruct H.
-      specialize (H1 here).
-      specialize (H1 current_flow.(Dest)).
-      rewrite Heqo in H1.
-      destruct (paths n current_flow.(Dest)); tauto.
+      destruct hop_target.
+      + apply all_pairs_paths_next_node_generator_creates_next_node_paths; try tauto.
+        destruct_with_eqn (paths here current_flow.(Dest)); try tauto.
+        destruct l; try discriminate.
+        assert (s0 = s) by congruence; subst.
+        apply paths_move_closer_to_destination in H.
+        destruct H.
+        destruct H.
+        specialize (H2 here).
+        specialize (H2 current_flow.(Dest)).
+        rewrite Heqo in H2.
+        destruct (paths s current_flow.(Dest)); tauto.
+      + destruct (paths here current_flow.(Dest)); try tauto.
+        destruct l; try discriminate.
+        congruence.
     - dependent induction path; try apply NoDup_single.
       simpl in H0.
       destruct H0.
       unfold all_pairs_paths_next_node_generator in H0.
       destruct H0.
       destruct_with_eqn (paths here current_flow.(Dest)); try tauto.
-      destruct l; try tauto.
-      subst.
+      destruct l; try discriminate.
+      assert (a = s) by congruence; subst.
       assert (H1' := H1).
       apply IHpath in H1.
       constructor; try assumption.
       unfold not.
       intros.
-      destruct H2.
+      destruct H3.
       + subst.
         apply paths_move_closer_to_destination in H.
         destruct H.
         destruct H.
-        specialize (H2 here).
-        specialize (H2 current_flow.(Dest)).
-        repeat rewrite Heqo in H2.
-        simpl in H2.
-        destruct (topology here here); try tauto.
-        destruct (path_cost topology x here l); try tauto.
+        specialize (H3 here).
+        specialize (H3 current_flow.(Dest)).
+        repeat rewrite Heqo in H3.
+        simpl in H3.
+        destruct (topology (SwitchNode here) (SwitchNode here)); try tauto.
+        destruct (path_cost topology x here current_flow.(Dest) l); try tauto.
         omega.
       + enough (~(In here path)) by tauto.
         apply paths_move_closer_to_destination in H.
@@ -412,14 +431,14 @@ Section Node.
         assert (H' := H).
         unfold generates_decreasing_costs in H'.
         destruct H'.
-        specialize (H4 here).
-        specialize (H4 current_flow.(Dest)).
-        rewrite Heqo in H4.
+        specialize (H5 here).
+        specialize (H5 current_flow.(Dest)).
+        rewrite Heqo in H5.
         repeat match goal with
         | [ H : match ?x with | Some _ => _ | None => False end |- _ ] => destruct_with_eqn (x); try tauto
         end.
         eapply decreasing_costs_implies_nonmember with (costs := x); try eassumption.
-        apply strictly_decreasing_costs_strengthening with (small_bound := n0); try omega.
+        apply strictly_decreasing_costs_strengthening with (small_bound := n); try omega.
         eapply all_pairs_paths_generate_strictly_decreasing_costs; eassumption.
   Qed.
 
@@ -432,7 +451,8 @@ Section Node.
   :=
     if policy current_flow then
       match paths here current_flow.(Dest) with
-      | Some (hop_target :: _) => Some hop_target
+      | Some (hop_target :: _) => Some (SwitchNode hop_target)
+      | Some [] => Some (HostNode current_flow.(Dest))
       | _ => None
       end
     else None.
@@ -443,7 +463,7 @@ Section Node.
       -> is_next_node_path lenient_next path here current_flow.
   Proof.
     intros.
-    dependent induction path; simpl; simpl in H; try assumption.
+    dependent induction path; simpl; simpl in H; eauto.
     destruct H.
     assert (H0' := H0).
     apply IHpath with (here := a) (current_flow := current_flow) in H0; try tauto.
@@ -462,16 +482,19 @@ Section Node.
       apply H.
       eassumption.
     - constructor; intros.
-      + apply path_exists_only_for_valid_flows0 in H0; try assumption.
+      + apply path_exists_only_for_valid_flows0 in H1; try assumption.
+        apply H1 in H0.
         destruct H0.
         exists x.
         eapply is_next_node_path_weakening; try eassumption; apply H.
-      + apply path_exists_only_for_valid_flows0.
+      + apply path_exists_only_for_valid_flows0 in H1.
+        apply H1.
         destruct H0.
         exists x.
         eapply is_next_node_path_weakening; try eassumption; apply H.
     - apply H in H1.
       apply no_black_holes0 in H1.
+      destruct hop_target; try assumption.
       destruct H1.
       exists x.
       eapply is_next_node_path_weakening; try eassumption; apply H.
@@ -499,7 +522,7 @@ Section Node.
     end.
   Qed.
 
-  Definition routing_tables := Node -> list (flow * Node).
+  Definition routing_tables := Switch -> list (flow * Node).
 
   Record routing_tables_valid (tables : routing_tables) (dec_next : dec_next_node) := {
     no_duplicate_entries : forall here,
@@ -551,6 +574,36 @@ Section Node.
       + destruct (mapper a); simpl; tauto.
   Qed.
 
+  Lemma map_filter_nodup_preservation : forall A B (mapper: A -> option B) l,
+    (forall (x y : A),
+        match mapper x, mapper y with
+        | Some x', Some y' => x' = y'
+        | _, _ => False
+        end -> x = y
+      )
+      -> NoDup l
+      -> NoDup (map_filter mapper l).
+  Proof.
+    intros.
+    dependent induction l; [apply NoDup_nil | idtac].
+    inversion_clear H0.
+    simpl.
+    destruct_with_eqn (mapper a); try (apply IHl; assumption).
+    apply NoDup_cons; try (apply IHl; assumption).
+    unfold not; intros.
+    clear IHl.
+    dependent induction l; try tauto.
+    inversion_clear H2.
+    simpl in H0, H1.
+    apply IHl with (b := b); try tauto.
+    destruct_with_eqn (mapper a0); simpl in H0; try assumption.
+    destruct H0; try assumption; subst.
+    enough (a0 = a) by firstorder.
+    apply H.
+    rewrite Heqo, Heqo0.
+    reflexivity.
+  Qed.
+
   Lemma map_filter_in_filtering : forall A B mapper l (result : B),
     (forall (x y : B), {x = y} + {x <> y})
       -> In result (map_filter mapper l)
@@ -571,52 +624,178 @@ Section Node.
     - apply IHl; assumption.
   Qed.
 
+  Fixpoint max_by {A} (mapper : A -> nat) (l : list A) default :=
+    match l with
+    | [] => default
+    | car :: cdr =>
+      if (mapper car) <? mapper (max_by mapper cdr default)
+      then max_by mapper cdr default
+      else car
+    end.
+
+  Lemma max_by_maximum {A} : forall (mapper : A -> nat) default l element,
+    In element l
+      -> mapper element <= mapper (max_by mapper l default).
+  Proof.
+    intros; dependent induction l; inversion_clear H; subst; simpl; repeat progress match goal with
+    | [ |- context[if ?cond then _ else _] ] => destruct_with_eqn (cond)
+    | [ H : _ <? _ = true |- _ ] => rewrite Nat.ltb_lt in H
+    | [ H : ?a <? ?b = false |- _ ] => assert (~a < b) by (rewrite <- Nat.ltb_lt; congruence); clear H
+    | [ IH : forall e : ?type, In e ?l -> _, element : ?type, H : In ?element ?l |- _ ] => specialize (IH element); specialize (IH H)
+    end; try omega.
+  Qed.
+
+  Lemma in_split {A} : forall (element : A) l,
+    In element l
+      -> exists front back, l = (front ++ element :: back).
+  Proof.
+    intros.
+    dependent induction l generalizing element; inversion_clear H.
+    - subst.
+      exists [], l.
+      reflexivity.
+    - apply IHl in H0.
+      destruct H0.
+      destruct H.
+      subst.
+      exists (a :: x), x0.
+      reflexivity.
+  Qed.
+
+  Lemma pidgeonhole_principle : forall {A} (big_list small_list : list A),
+    (forall element, In element small_list -> In element big_list)
+      -> NoDup small_list
+      -> length small_list <= length big_list.
+  Proof.
+    intros.
+    dependent induction small_list generalizing big_list; simpl; try omega.
+    inversion_clear H0.
+    assert (In a big_list) by (apply H; simpl; tauto).
+    apply in_split in H0.
+    destruct H0.
+    destruct H0.
+    subst.
+    assert (length (x ++ a :: x0) = S (length (x ++ x0))) by (clear; dependent induction x; simpl; eauto).
+    rewrite H0.
+    enough (length small_list <= length (x ++ x0)) by omega.
+    apply IHsmall_list; try assumption.
+    intros.
+    specialize (H element).
+    assert (In element (a :: small_list)) by (simpl; tauto).
+    apply H in H4.
+    assert (element <> a) by (unfold not; intros; subst; tauto).
+    clear - H4 H5.
+    dependent induction x; simpl in *; destruct H4; eauto; congruence.
+  Qed.
+
   Definition fst {A} {B} (pair : A * B) := match pair with | (l, _) => l end.
   Definition snd {A} {B} (pair : A * B) := match pair with | (_, r) => r end.
 
-  Hypothesis Node_eq_dec : forall x y : Node, {x = y} + {x <> y}.
-  Definition Node_pair_eq_dec : forall x y : (Node * Node), {x = y} + {x <> y}.
+  Hypothesis Switch_eq_dec : forall x y : Switch, {x = y} + {x <> y}.
+  Hypothesis Host_eq_dec : forall x y : Host, {x = y} + {x <> y}.
+
+  Ltac combined_eq_dec combined_type :=
+    intros; repeat match goal with
+    | [ x : combined_type |- _ ] => destruct x
+    | [ |- {?x = ?x} + {_} ] => constructor 1; reflexivity
+    | [ H : ?x <> ?y |- {_} + {?constr ?x <> ?constr ?y} ] => constructor 2; congruence
+    | [ H : ?x <> ?y |- {_} + {?constr _ ?x <> ?constr _ ?y} ] => constructor 2; congruence
+    | [ H : ?x <> ?y |- {_} + {?constr ?x _ <> ?constr ?y _} ] => constructor 2; congruence
+    | [ H : forall a b : ?type, {a = b} + {a <> b}, x : ?type, y : ?type |- {?constr ?x = ?constr ?y} + {?constr ?x <> ?constr ?y} ] => destruct (H x y); subst
+    | [ H : forall a b : ?type, {a = b} + {a <> b}, w : ?type, x : ?type, y : ?type, z : ?type |- {?constr ?w ?x = ?constr ?y ?z} + {?constr ?w ?x <> ?constr ?y ?z} ] => destruct (H w y), (H x z); subst
+    | [ H1 : forall a b : ?type1, {a = b} + {a <> b}, H2 : forall a b : ?type2, {a = b} + {a <> b}, w : ?type1, x : ?type2, y : ?type1, z : ?type2 |- {?constr ?w ?x = ?constr ?y ?z} + {?constr ?w ?x <> ?constr ?y ?z} ] => destruct (H1 w y), (H2 x z); subst
+    end; constructor 2; discriminate.
+
+  Definition Node_eq_dec : forall x y : Node, {x = y} + {x <> y}.
   Proof.
-    intros.
-    destruct x, y, Node_eq_dec with (x := n) (y := n1), Node_eq_dec with (x := n0) (y := n2); subst; try (constructor 1; reflexivity); constructor 2; congruence.
+    combined_eq_dec Node.
+  Defined.
+
+  Definition Host_pair_eq_dec : forall x y : (Host * Host), {x = y} + {x <> y}.
+  Proof.
+    combined_eq_dec (prod Host Host).
+  Defined.
+
+  Definition flow_eq_dec : forall x y : flow, {x = y} + {x <> y}.
+  Proof.
+    assert (Host_eq_dec := Host_eq_dec).
+    combined_eq_dec flow.
   Defined.
 
   Definition flow_Node_pair_eq_dec : forall x y : (flow * Node), {x = y} + {x <> y}.
   Proof.
-    intros.
-    destruct x, y, f, f0, Node_eq_dec with (x := Src0) (y := Src1), Node_eq_dec with (x := Dest0) (y := Dest1), Node_eq_dec with (x := n) (y := n0); subst; try (constructor 1; reflexivity); constructor 2; congruence.
+    assert (Node_eq_dec := Node_eq_dec).
+    assert (flow_eq_dec := flow_eq_dec).
+    combined_eq_dec (prod flow Node).
   Defined.
 
-  Definition flow_eq_dec : forall x y : flow, {x = y} + {x.(Src) <> y.(Src)} + {x.(Dest) <> y.(Dest)}.
+  Definition is_host node :=
+    match node with
+    | HostNode _ => true
+    | SwitchNode _ => false
+    end.
+
+  Definition is_switch node :=
+    match node with
+    | HostNode _ => false
+    | SwitchNode _ => true
+    end.
+
+  Definition filter_hosts :=
+    map_filter (fun node =>
+      match node with
+      | HostNode host => Some host
+      | SwitchNode _ => None
+      end
+    ).
+
+  Definition filter_switches :=
+    map_filter (fun node =>
+      match node with
+      | HostNode _ => None
+      | SwitchNode switch => Some switch
+      end
+    ).
+
+  Lemma filter_listing_nodes : forall all_nodes,
+    Listing all_nodes
+      -> Listing (filter_switches all_nodes) /\ Listing (filter_hosts all_nodes).
   Proof.
-    intros.
-    destruct x, y, Node_eq_dec with (x := Src0) (y := Src1), Node_eq_dec with (x := Dest0) (y := Dest1); subst.
-    - constructor 1; constructor 1; reflexivity.
-    - constructor 2; simpl; tauto.
-    - constructor 1; constructor 2; simpl; tauto.
-    - constructor 2; simpl; tauto.
-  Defined.
+    intros; constructor; constructor; unfold Listing; match goal with
+    | [ all_nodes : list Node, H : Listing ?all_nodes |- Full _ ] =>
+      unfold Full; intros; match goal with
+      | [ |- In ?a (filter_hosts all_nodes) ] => apply map_filter_in_preservation with (element := HostNode a)
+      | [ |- In ?a (filter_switches all_nodes) ] => apply map_filter_in_preservation with (element := SwitchNode a)
+      end; try apply H; try apply Node_eq_dec; reflexivity
+    | [ all_nodes : list Node, H : Listing ?all_nodes |- NoDup _ ] =>
+      apply proj1 in H; apply map_filter_nodup_preservation; try assumption;
+      intros; repeat match goal with
+      | [ x : Node |- _ ] => destruct x
+      end; subst; tauto
+    end.
+  Qed.
 
-  Definition exhaustive_routing_tables_generator (dec_next : dec_next_node) (all_nodes : list Node) (here : Node) :=
-    map_filter (fun pair =>
+  Definition exhaustive_routing_tables_generator (dec_next : dec_next_node) (all_nodes : list Node) (here : Switch) :=
+    let all_hosts := filter_hosts all_nodes
+    in map_filter (fun pair =>
       match dec_next here {| Src := fst pair; Dest := snd pair |} with
       | Some hop_target => Some ({| Src := fst pair; Dest := snd pair |}, hop_target)
       | None => None
       end
-    ) (nodup Node_pair_eq_dec (list_prod all_nodes all_nodes)).
+    ) (nodup Host_pair_eq_dec (list_prod all_hosts all_hosts)).
 
   Theorem exhaustive_routing_tables_generator_valid : routing_tables_generator_valid exhaustive_routing_tables_generator.
   Proof.
     unfold exhaustive_routing_tables_generator.
     constructor; intros.
-    - remember (nodup Node_pair_eq_dec (list_prod all_nodes all_nodes)) as pairs.
+    - remember (nodup Host_pair_eq_dec (list_prod (filter_hosts all_nodes) (filter_hosts all_nodes))) as pairs.
       assert (NoDup pairs) by (subst; apply NoDup_nodup).
       clear H Heqpairs.
       dependent induction pairs; try apply NoDup_nil.
       simpl.
       inversion_clear H0; subst.
       destruct a; simpl.
-      destruct (dec_next here {| Src := n; Dest := n0 |}); try (apply IHpairs; assumption).
+      destruct (dec_next here {| Src := h; Dest := h0 |}); try (apply IHpairs; assumption).
       constructor; try (apply IHpairs; assumption).
       clear IHpairs.
       dependent induction pairs; try (simpl; tauto).
@@ -641,12 +820,13 @@ Section Node.
         apply IHpairs; tauto.
     - constructor; intros.
       + apply map_filter_in_preservation with (element := (current_flow.(Src), current_flow.(Dest))).
-        * apply Node_pair_eq_dec.
+        * apply Host_pair_eq_dec.
         * destruct current_flow.
           simpl.
           rewrite H0.
           reflexivity.
-        * apply nodup_In, in_prod; apply H.
+        * assert (Listing (filter_hosts all_nodes)) by (apply filter_listing_nodes in H; tauto).
+          apply nodup_In, in_prod; apply H1.
       + apply map_filter_in_filtering in H0; try apply flow_Node_pair_eq_dec.
         destruct H0.
         assert (x = (current_flow.(Src), current_flow.(Dest))).
@@ -715,10 +895,9 @@ Section Node.
     }.
 
     Inductive openflow_action :=
-    | ForwardToPort : Port -> openflow_action
+    | ForwardToSwitch : Port -> openflow_action
+    | ForwardToDest : Port -> openflow_action
     | Drop
-    | ReceiveAtDest
-    (* Other actions exist but are not used here *)
     .
 
     Record openflow_flow_entry := {
@@ -746,97 +925,113 @@ Section Node.
         else get_matching_action packet cdr
       end.
 
-    Definition node_ip_map := Node -> ipv4_address.
-    Definition node_openflow_entry_map := Node -> list openflow_flow_entry.
+    Definition host_ip_map := Host -> ipv4_address.
+    Definition switch_openflow_entry_map := Switch -> list openflow_flow_entry.
 
-    Inductive openflow_network_packet_state :=
-    | EnRoute : node_ip_map -> node_openflow_entry_map -> network_topology -> ipv4_packet -> Node -> openflow_network_packet_state
-    | Arrived
-    | Dropped
-    .
+    Section OpenFlowNetwork.
+      Variable host_ip : host_ip_map.
+      Variable entries : switch_openflow_entry_map.
+      Variable topology : network_topology.
+      Variable packet : ipv4_packet.
 
-    Inductive openflow_network_step : openflow_network_packet_state -> openflow_network_packet_state -> Prop :=
-    | ForwardPacket : forall node_ips entries ports port packet location new_location,
-      get_matching_action packet (entries location) = ForwardToPort port
-        -> ports location new_location = Some port
-        -> ipv4_eqb (node_ips location) packet.(IpDest) = false
-        -> openflow_network_step (EnRoute node_ips entries ports packet location) (EnRoute node_ips entries ports packet new_location)
-    | DropPacket : forall node_ips entries ports packet location,
-      get_matching_action packet (entries location) = Drop
-        -> ipv4_eqb (node_ips location) packet.(IpDest) = false
-        -> openflow_network_step (EnRoute node_ips entries ports packet location) Dropped
-    | ReceivePacket : forall node_ips entries ports packet location,
-      get_matching_action packet (entries location) = ReceiveAtDest
-        -> ipv4_eqb (node_ips location) packet.(IpDest) = true
-        -> openflow_network_step (EnRoute node_ips entries ports packet location) Arrived
-    .
+      Inductive openflow_network_packet_state :=
+      | NotSentYet
+      | EnRoute : Switch -> openflow_network_packet_state
+      | ReceivedAtHost : Host -> openflow_network_packet_state
+      | Arrived
+      | Dropped
+      .
+
+      Inductive openflow_network_step : openflow_network_packet_state -> openflow_network_packet_state -> Prop :=
+      | EmitPacketFromSrc : forall port src_host first_switch,
+        ipv4_eqb src_host.(host_ip) packet.(IpSrc) = true
+          -> topology (HostNode src_host) (SwitchNode first_switch) = Some port
+          -> openflow_network_step NotSentYet (EnRoute first_switch)
+      | ForwardPacketToSwitch : forall port current_switch new_switch,
+        get_matching_action packet current_switch.(entries) = ForwardToSwitch port
+          -> topology (SwitchNode current_switch) (SwitchNode new_switch) = Some port
+          -> openflow_network_step (EnRoute current_switch) (EnRoute new_switch)
+      | ForwardPacketToDest : forall port current_switch dest_host,
+        get_matching_action packet current_switch.(entries) = ForwardToDest port
+          -> topology (SwitchNode current_switch) (HostNode dest_host) = Some port
+          -> openflow_network_step (EnRoute current_switch) (ReceivedAtHost dest_host)
+      | DropPacketAtSwitch : forall current_switch,
+        get_matching_action packet current_switch.(entries) = Drop
+          -> openflow_network_step (EnRoute current_switch) Dropped
+      | AcceptPacket : forall dest_host,
+        ipv4_eqb dest_host.(host_ip) packet.(IpDest) = true
+          -> openflow_network_step (ReceivedAtHost dest_host) Arrived
+      | DropPacketAtStart : forall src_host,
+        (forall switch, topology (HostNode src_host) (SwitchNode switch) = None)
+          -> openflow_network_step NotSentYet Dropped
+      .
+
+      Fixpoint always_reaches_state_after_bounded_steps desired_state num_steps current_state : Prop :=
+        desired_state = current_state \/
+        match num_steps with
+        | 0 => False
+        | S num_steps' =>
+          (exists new_state, openflow_network_step current_state new_state) /\
+          forall new_state,
+            openflow_network_step current_state new_state
+              -> always_reaches_state_after_bounded_steps desired_state num_steps' new_state
+        end.
+    End OpenFlowNetwork.
 
     Definition generate_openflow_entries
       (tables : routing_tables)
-      (node_ips : node_ip_map)
+      (host_ip : host_ip_map)
       (topology : network_topology)
-      node
+      (switch : Switch)
     :=
-      {|
+      map (fun pair => {|
         header_fields := {|
-          IpSrcMatcher := None;
-          IpDestMatcher := Some (node_ips node)
+          IpSrcMatcher := Some pair.(fst).(Src).(host_ip);
+          IpDestMatcher := Some pair.(fst).(Dest).(host_ip)
         |};
-        action := ReceiveAtDest
-      |} :: map (fun pair => {|
-        header_fields := {|
-          IpSrcMatcher := Some (node_ips pair.(fst).(Src));
-          IpDestMatcher := Some (node_ips pair.(fst).(Dest))
-        |};
-        action := match topology node pair.(snd) with
-        | Some port => ForwardToPort port
+        action := match topology (SwitchNode switch) pair.(snd) with
+        | Some port =>
+          if is_switch pair.(snd)
+          then ForwardToSwitch port
+          else ForwardToDest port
 
         (* Impossible if `tables` is valid for the topology *)
         | None => Drop
         end
-      |}) (tables node).
+      |}) (tables switch).
 
-    Fixpoint all_ports_exist (topology : network_topology) node openflow_flow_entries :=
-      match openflow_flow_entries with
+    Fixpoint all_ports_exist (topology : network_topology) switch entries :=
+      match entries with
       | [] => True
       | entry :: cdr =>
         match entry.(action) with
-        | ForwardToPort port => exists hop_target, topology node hop_target = Some port
+        | ForwardToSwitch port
+        | ForwardToDest port => exists hop_target, topology (SwitchNode switch) hop_target = Some port
         | Drop => True
-        | ReceiveAtDest => True
-        end /\ all_ports_exist topology node cdr
-      end.
-
-    Fixpoint always_reaches_state_after_bounded_steps desired_state num_steps current_state : Prop :=
-      desired_state = current_state \/
-      match num_steps with
-      | 0 => False
-      | S num_steps' =>
-        (exists new_state, openflow_network_step current_state new_state) /\
-        forall new_state,
-          openflow_network_step current_state new_state
-            -> always_reaches_state_after_bounded_steps desired_state num_steps' new_state
+        end /\ all_ports_exist topology switch cdr
       end.
 
     Definition should_arrive (policy : static_network_policy) src dest :=
       if policy {| Src := src; Dest := dest |}
       then true
-      else if Node_eq_dec src dest
-        then true
-        else false.
+      else false.
 
-    Record valid_openflow_entries (topology : network_topology) (policy : static_network_policy) (node_ips : node_ip_map) (entry_map : node_openflow_entry_map) : Prop := {
+    Record valid_openflow_entries (topology : network_topology) (policy : static_network_policy) (host_ip : host_ip_map) (entries : switch_openflow_entry_map) : Prop := {
       packets_arrive_iff_allowed : forall packet src_node dest_node,
-        node_ips src_node = packet.(IpSrc)
-          -> node_ips dest_node = packet.(IpDest)
+        src_node.(host_ip) = packet.(IpSrc)
+          -> dest_node.(host_ip) = packet.(IpDest)
           -> exists num_steps,
 
             (* Note: If the source/dest node have the same IP (or are the same node), this will always be true if num_steps >= 1 *)
             always_reaches_state_after_bounded_steps
+              host_ip
+              entries
+              topology
+              packet
               (if should_arrive policy src_node dest_node then Arrived else Dropped)
               num_steps
-              (EnRoute node_ips entry_map topology packet src_node);
-      existent_ports : forall node, all_ports_exist topology node (entry_map node)
+              NotSentYet;
+      existent_ports : forall switch, all_ports_exist topology switch switch.(entries)
     }.
 
     Record flow_transition_system {state} := {
@@ -898,7 +1093,7 @@ Section Node.
       intros.
       unfold filtered_sys, filter_transition_system in H.
       simpl in H.
-      clear Node_eq_dec filtered_sys.
+      clear filtered_sys.
       remember sys.(Initial) as start_state; clear Heqstart_state.
       dependent induction H; try apply TrcRefl.
       destruct (predicate start sent_flow).
@@ -910,12 +1105,12 @@ Section Node.
       Context {policy_state : Set}.
       Variable topology : network_topology.
       Variable policy : @dynamic_network_policy policy_state.
-      Variable node_ips : node_ip_map.
+      Variable node_ip : host_ip_map.
 
       Record network_controller {controller_state} := {
         controller_system : flow_transition_system controller_state;
 
-        controller_state_decider : controller_state -> node_openflow_entry_map
+        controller_state_decider : controller_state -> switch_openflow_entry_map
       }.
 
       Definition dynamic_policy_valid paths :=
@@ -932,75 +1127,82 @@ Section Node.
         ) (join_transition_systems policy.(policy_system) controller.(controller_system)) in
         invariant joined_sys (fun policy_and_controller_state =>
           let (policy_state, controller_state) := policy_and_controller_state in
-          valid_openflow_entries topology (policy.(policy_state_decider) policy_state) node_ips (controller.(controller_state_decider) controller_state)
+          valid_openflow_entries topology (policy.(policy_state_decider) policy_state) node_ip (controller.(controller_state_decider) controller_state)
         ).
     End NetworkSystem.
 
-    Lemma get_matching_action_forwards_to_correct_port : forall topology dec_next current_flow here hop_target port node_ips all_nodes,
+    Ltac get_matching_action_unequal_induction host_ip Heqb IHl Src0 Src1 Dest0 Dest1 :=
+      let H' := fresh "H'" in
+      assert (H' : Src0 <> Src1 \/ Dest0 <> Dest1) by (destruct (Host_eq_dec Src0 Src1), (Host_eq_dec Dest0 Dest1); subst; tauto);
+      destruct H';
+      unfold matches_header_fields_matcher;
+      simpl;
+      match goal with
+      | [ H : Src0 <> Src1 |- _ ] => destruct_with_eqn (ipv4_eqb Src1.(host_ip) Src0.(host_ip))
+      | [ H : Dest0 <> Dest1 |- _ ] => destruct_with_eqn (ipv4_eqb Dest1.(host_ip) Dest0.(host_ip))
+      end;
+      match goal with
+      | [ H : Injective host_ip |- _ ] => try (apply ipv4_eqb_iff, H in Heqb; congruence)
+      end;
+      match goal with
+      | [ |- context[_ && false] ] => rewrite andb_false_r
+      | _ => simpl
+      end;
+      apply IHl;
+      intros;
+      constructor;
+      intros;
+      match goal with
+      | [ H : forall h, ?next = Some h <-> In (?f, h) _ |- _ ] =>
+        match goal with
+        | [ |- next = Some _ ] => apply H; constructor 2; assumption
+        | [ H2 : next = Some ?hop |- In (f, ?hop) _ ] => apply H in H2; inversion_clear H2; congruence
+        end
+      end.
+
+    Lemma get_matching_action_forwards_to_correct_port : forall topology (dec_next : dec_next_node) current_flow (here : Switch) hop_target port host_ip all_nodes,
       dec_next here current_flow = Some hop_target
-        -> topology here hop_target = Some port
-        -> Injective node_ips
+        -> topology (SwitchNode here) hop_target = Some port
+        -> Injective host_ip
         -> Listing all_nodes
         -> routing_tables_valid (exhaustive_routing_tables_generator dec_next all_nodes) dec_next
-        -> here <> current_flow.(Dest)
         -> get_matching_action
-          {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
-          (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
-          = ForwardToPort port.
+          {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
+          (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology here)
+          = if is_switch hop_target then ForwardToSwitch port else ForwardToDest port.
     Proof.
       intros.
       assert (forall hop, dec_next here current_flow = Some hop <-> In (current_flow, hop) (exhaustive_routing_tables_generator dec_next all_nodes here)) by (intros; apply entries_match_next_node_result; assumption).
       clear H3.
       unfold generate_openflow_entries.
-      induction (exhaustive_routing_tables_generator dec_next all_nodes here); [ apply H5 in H; inversion H | idtac ].
+      induction (exhaustive_routing_tables_generator dec_next all_nodes here); [ apply H4 in H; inversion H | idtac ].
       simpl.
       destruct a.
-      assert ({current_flow = f} + {current_flow.(Src) <> f.(Src)} + {current_flow.(Dest) <> f.(Dest)}) by (apply flow_eq_dec).
-      destruct H3; [ destruct s | idtac ].
+      assert ({current_flow = f} + {current_flow <> f}) by (apply flow_eq_dec).
+      destruct H3.
       - destruct current_flow, f; injection e; intros; subst; simpl.
         unfold matches_header_fields_matcher.
         simpl.
         repeat rewrite ipv4_eqb_refl.
         simpl.
-        destruct_with_eqn (ipv4_eqb (node_ips here) (node_ips Dest1)); try (apply ipv4_eqb_iff, H1 in Heqb; tauto).
         enough (hop_target = n) by (rewrite <- H3, H0; reflexivity).
         enough (Some hop_target = Some n) by (injection H3; tauto).
         rewrite <- H.
-        apply H5.
+        apply H4.
         constructor.
         reflexivity.
-      - unfold matches_header_fields_matcher.
-        simpl.
-        destruct_with_eqn (ipv4_eqb (node_ips f.(Src)) (node_ips current_flow.(Src))); [ apply ipv4_eqb_iff, H1, eq_sym in Heqb; tauto | idtac ].
-        simpl.
-        apply IHl.
-        intros.
-        constructor; intros; try (apply H5; constructor 2; assumption).
-        apply H5 in H3.
-        inversion_clear H3; try assumption.
-        congruence.
-      - unfold matches_header_fields_matcher.
-        simpl.
-        destruct_with_eqn (ipv4_eqb (node_ips f.(Dest)) (node_ips current_flow.(Dest))); [ apply ipv4_eqb_iff, H1, eq_sym in Heqb; tauto | idtac ].
-        rewrite andb_false_r.
-        (* FIXME: the lines below here are duplicated from the above subgoal *)
-        apply IHl.
-        intros.
-        constructor; intros; try (apply H5; constructor 2; assumption).
-        apply H5 in H3.
-        inversion_clear H3; try assumption.
-        congruence.
+      - destruct current_flow, f.
+        get_matching_action_unequal_induction host_ip Heqb IHl Src0 Src1 Dest0 Dest1.
     Qed.
 
-    Lemma get_matching_action_drops : forall topology dec_next current_flow here node_ips all_nodes,
+    Lemma get_matching_action_drops : forall topology dec_next current_flow here host_ip all_nodes,
       dec_next here current_flow = None
-        -> Injective node_ips
+        -> Injective host_ip
         -> Listing all_nodes
         -> routing_tables_valid (exhaustive_routing_tables_generator dec_next all_nodes) dec_next
-        -> here <> current_flow.(Dest)
         -> get_matching_action
-          {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
-          (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
+          {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
+          (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology here)
           = Drop.
     Proof.
       intros.
@@ -1009,53 +1211,35 @@ Section Node.
       unfold generate_openflow_entries.
       simpl.
       unfold matches_header_fields_matcher.
-      simpl.
-      destruct_with_eqn (ipv4_eqb (node_ips here) (node_ips current_flow.(Dest))); try (apply ipv4_eqb_iff, H0 in Heqb; tauto).
       induction (exhaustive_routing_tables_generator dec_next all_nodes here); try reflexivity.
       simpl.
       unfold matches_header_fields_matcher.
       destruct a.
       simpl.
-      assert ({current_flow = f} + {current_flow.(Src) <> f.(Src)} + {current_flow.(Dest) <> f.(Dest)}) by (apply flow_eq_dec).
-      destruct H2; [ destruct s | idtac ].
+      assert (H' : {current_flow = f} + {current_flow <> f}) by (apply flow_eq_dec); destruct H'.
       - subst.
-        assert (dec_next here f = Some n) by (apply H4; simpl; tauto).
+        assert (dec_next here f = Some n) by (apply H3; simpl; tauto).
         rewrite H2 in H.
         discriminate.
-      (* TODO: combine this proof with `get_matching_action_forwards_to_correct_port`
-        and extract duplicated portions into an ltac script *)
-      - destruct_with_eqn (ipv4_eqb (node_ips f.(Src)) (node_ips current_flow.(Src))); [ apply ipv4_eqb_iff, H0, eq_sym in Heqb0; tauto | idtac ].
-        apply IHl.
-        intros.
-        constructor; intros; try (apply H4; constructor 2; assumption).
-        apply H4 in H2.
-        inversion_clear H2; try assumption.
-        congruence.
-      - destruct_with_eqn (ipv4_eqb (node_ips f.(Dest)) (node_ips current_flow.(Dest))); [ apply ipv4_eqb_iff, H0, eq_sym in Heqb0; tauto | idtac ].
-        rewrite andb_false_r.
-        apply IHl.
-        intros.
-        constructor; intros; try (apply H4; constructor 2; assumption).
-        apply H4 in H2.
-        inversion_clear H2; try assumption.
-        congruence.
+      - destruct current_flow, f.
+        get_matching_action_unequal_induction host_ip Heqb IHl Src0 Src1 Dest0 Dest1.
     Qed.
 
-    Lemma dec_next_creates_valid_unique_state_transitions : forall topology policy dec_next node_ips (packet : ipv4_packet) here current_flow all_nodes openflow_entries,
+    Lemma dec_next_creates_valid_unique_state_transitions : forall topology policy dec_next host_ip (packet : ipv4_packet) here current_flow all_nodes entries,
       dec_next_node_valid topology policy dec_next
         -> valid_topology topology
         -> Listing all_nodes
-        -> Injective node_ips
-        -> openflow_entries = generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology
-        -> packet = {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
-        -> here <> current_flow.(Dest)
+        -> Injective host_ip
+        -> entries = generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology
+        -> packet = {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
         -> (
-          (exists new_state, openflow_network_step (EnRoute node_ips openflow_entries topology packet here) new_state) /\
+          (exists new_state, openflow_network_step host_ip entries topology packet (EnRoute here) new_state) /\
           forall new_state,
-            openflow_network_step (EnRoute node_ips openflow_entries topology packet here) new_state
+            openflow_network_step host_ip entries topology packet (EnRoute here) new_state
               -> new_state =
                   match dec_next here current_flow with
-                  | Some hop_target => EnRoute node_ips openflow_entries topology packet hop_target
+                  | Some (SwitchNode hop_target) => EnRoute hop_target
+                  | Some (HostNode hop_target) => ReceivedAtHost hop_target
                   | None => Dropped
                   end
         ).
@@ -1063,71 +1247,63 @@ Section Node.
       intros.
       assert (routing_tables_valid (exhaustive_routing_tables_generator dec_next all_nodes) dec_next) by (apply exhaustive_routing_tables_generator_valid; assumption).
       constructor; destruct_with_eqn (dec_next here current_flow).
-      - exists (EnRoute node_ips openflow_entries topology packet n).
-        apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := n) (current_flow := current_flow) in H; try assumption.
-        destruct_with_eqn (topology here n); try tauto.
-        apply ForwardPacket with (port := p); try assumption.
-        + subst.
-          apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption.
-        + rewrite H4.
-          simpl.
-          destruct_with_eqn (ipv4_eqb (node_ips here) (node_ips current_flow.(Dest))); try reflexivity.
-          apply ipv4_eqb_iff, H2 in Heqb; tauto.
+      - destruct n.
+        + exists (EnRoute s).
+          apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := SwitchNode s) (current_flow := current_flow) in H; try assumption.
+          destruct_with_eqn (topology (SwitchNode here) (SwitchNode s)); try tauto.
+          apply ForwardPacketToSwitch with (port := p); try assumption.
+          subst.
+          apply get_matching_action_forwards_to_correct_port with (hop_target := SwitchNode s); assumption.
+        + exists (ReceivedAtHost h).
+          apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := HostNode h) (current_flow := current_flow) in H; try assumption.
+          destruct_with_eqn (topology (SwitchNode here) (HostNode h)); try tauto.
+          apply ForwardPacketToDest with (port := p) (dest_host := h); try assumption.
+          subst.
+          apply get_matching_action_forwards_to_correct_port with (hop_target := HostNode h); assumption.
       - exists Dropped.
         subst.
         constructor; simpl; try (apply get_matching_action_drops; assumption).
-        destruct_with_eqn (ipv4_eqb (node_ips here) (node_ips current_flow.(Dest))); try reflexivity.
-        apply ipv4_eqb_iff, H2 in Heqb; tauto.
       - intros.
-        inversion_clear H7; subst.
-        + apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := n) (current_flow := current_flow) in H; try assumption.
-          destruct_with_eqn (topology here n); try tauto.
-          assert (
-            get_matching_action
-              {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
-              (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
-            = ForwardToPort p
-          ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
-          rewrite H3 in H8.
-          injection H8; intros; subst.
-          enough (n = new_location) by (subst; reflexivity).
-          specialize (H0 here).
-          specialize (H0 n).
-          specialize (H0 new_location).
+
+        apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := n) (current_flow := current_flow) in H; try assumption.
+        destruct_with_eqn (topology (SwitchNode here) n); try tauto.
+        assert (
+          get_matching_action
+            {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
+            (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology here)
+          = if is_switch n then ForwardToSwitch p else ForwardToDest p
+        ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
+        inversion_clear H6; subst; rewrite H8 in H7; destruct (is_switch n); try discriminate; injection H7; intros; subst.
+
+        + enough (n = SwitchNode new_switch) by (subst; reflexivity).
+          apply no_duplicate_ports with (node := SwitchNode here) (outgoing1 := n) (outgoing2 := SwitchNode new_switch) in H0.
           rewrite Heqo0, H9 in H0.
           apply H0.
           reflexivity.
-        + apply all_hops_in_topology with (topology := topology) (policy := policy) (here := here) (hop_target := n) (current_flow := current_flow) in H; try assumption.
-          destruct_with_eqn (topology here n); try tauto.
-          assert (
-            get_matching_action
-              {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
-              (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
-            = ForwardToPort p
-          ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
-          rewrite H3 in H8.
-          discriminate.
-        + apply ipv4_eqb_iff, H2 in H9.
-          tauto.
+        + enough (n = HostNode dest_host) by (subst; reflexivity).
+          apply no_duplicate_ports with (node := SwitchNode here) (outgoing1 := n) (outgoing2 := HostNode dest_host) in H0.
+          rewrite Heqo0, H9 in H0.
+          apply H0.
+          reflexivity.
       - intros.
-        inversion_clear H7; subst; try reflexivity.
-        + assert (
-            get_matching_action
-              {| IpSrc := node_ips current_flow.(Src); IpDest := node_ips current_flow.(Dest) |}
-              (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) node_ips topology here)
-            = Drop
-          ) by (apply get_matching_action_drops; assumption).
-          rewrite H3 in H8.
-          discriminate.
-        + apply ipv4_eqb_iff, H2 in H9.
-          tauto.
+        assert (
+          get_matching_action
+            {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
+            (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology here)
+          = Drop
+        ) by (apply get_matching_action_drops; assumption).
+        inversion_clear H6; subst; try reflexivity; rewrite H7 in H8; discriminate.
     Qed.
 
-    Lemma reaches_arrived_state_from_destination_in_one_step : forall node_ips topology tables src_node dest_node,
+    Lemma reaches_arrived_state_from_destination_in_one_step : forall host_ip topology tables src_host dest_host,
       always_reaches_state_after_bounded_steps
+        host_ip
+        (generate_openflow_entries tables host_ip topology)
+        topology
+        {| IpSrc := src_host.(host_ip); IpDest := dest_host.(host_ip) |}
         Arrived
         1
-        (EnRoute node_ips (generate_openflow_entries tables node_ips topology) topology {| IpSrc := node_ips src_node; IpDest := node_ips dest_node |} dest_node).
+        (ReceivedAtHost dest_host).
     Proof.
       intros.
       simpl.
@@ -1135,13 +1311,8 @@ Section Node.
       constructor.
       - exists Arrived.
         constructor.
-        + simpl.
-          unfold matches_header_fields_matcher.
-          simpl.
-          rewrite ipv4_eqb_refl.
-          reflexivity.
-        + simpl.
-          apply ipv4_eqb_refl.
+        rewrite ipv4_eqb_refl.
+        reflexivity.
       - intros.
         apply or_introl.
         inversion_clear H; try reflexivity; subst; repeat match goal with
@@ -1150,10 +1321,10 @@ Section Node.
         end.
     Qed.
 
-    Lemma always_reaches_state_after_bounded_steps_weakening : forall desired_state big_num_steps small_num_steps current_state,
-      always_reaches_state_after_bounded_steps desired_state small_num_steps current_state
+    Lemma always_reaches_state_after_bounded_steps_weakening : forall host_ip entries topology packet desired_state big_num_steps small_num_steps current_state,
+      always_reaches_state_after_bounded_steps host_ip entries topology packet desired_state small_num_steps current_state
         -> small_num_steps <= big_num_steps
-        -> always_reaches_state_after_bounded_steps desired_state big_num_steps current_state.
+        -> always_reaches_state_after_bounded_steps host_ip entries topology packet desired_state big_num_steps current_state.
     Proof.
       intros.
       dependent induction small_num_steps generalizing big_num_steps.
@@ -1171,95 +1342,140 @@ Section Node.
         + omega.
     Qed.
 
-    Lemma disallowed_flow_immediately_dropped : forall topology policy next src dest hop_target,
-      next_node_valid topology policy next
-        -> policy {| Src := src; Dest := dest |} = false
-        -> ~next src {| Src := src; Dest := dest |} hop_target.
+    Lemma always_reaches_state_after_bounded_steps_combination : forall host_ip entries topology packet start_state mid_state end_state bound1 bound2,
+      always_reaches_state_after_bounded_steps host_ip entries topology packet mid_state bound1 start_state
+        -> always_reaches_state_after_bounded_steps host_ip entries topology packet end_state bound2 mid_state
+        -> always_reaches_state_after_bounded_steps host_ip entries topology packet end_state (bound1 + bound2) start_state.
     Proof.
-      unfold not.
       intros.
-      assert (H' := H).
-      assert (H'' := H).
-      apply path_exists_only_for_valid_flows with (current_flow := {| Src := src; Dest := dest |}) in H.
-      simpl in H.
-      apply no_black_holes with (topology := topology) (policy := policy) (current_flow := {| Src := src; Dest := dest |}) (here := src) (hop_target := hop_target) in H'; try assumption.
-      destruct H'.
-      assert (exists path, is_next_node_path next path src {| Src := src; Dest := dest |}) by (exists (hop_target :: x); constructor; tauto).
-      apply H in H3.
-      destruct H3.
-      - rewrite H0 in H3.
-        discriminate.
+      dependent induction bound1 generalizing start_state; try (destruct H; subst; tauto).
+      destruct H.
       - subst.
-        apply all_paths_acyclic with (path := (hop_target :: x)) (here := dest) (current_flow := {| Src := dest; Dest := dest |}) in H''; try (constructor; assumption).
-        clear H0 H H1.
-        dependent induction x generalizing hop_target.
-        + simpl in H2.
-          subst.
-          inversion_clear H''.
-          apply H.
-          constructor.
-          reflexivity.
-        + apply IHx with (hop_target := a); try (simpl in H2; tauto).
-          inversion_clear H''; subst.
-          inversion_clear H0; subst.
-          constructor; try assumption.
-          simpl.
-          simpl in H.
-          tauto.
+        apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := bound2); intuition.
+      - simpl.
+        apply or_intror.
+        destruct H.
+        eauto.
     Qed.
 
-    Lemma disallowed_packet_eventually_dropped : forall topology policy dec_next all_nodes node_ips src dest,
+    Lemma disallowed_packet_eventually_dropped : forall topology policy dec_next all_nodes host_ip src dest,
       valid_topology topology
         -> Listing all_nodes
-        -> Injective node_ips
+        -> Injective host_ip
         -> dec_next_node_valid topology policy dec_next
         -> policy {| Src := src; Dest := dest |} = false
-        -> src <> dest
         -> exists num_steps,
-          always_reaches_state_after_bounded_steps Dropped num_steps (
-            EnRoute node_ips
-              (
-                generate_openflow_entries
-                  (exhaustive_routing_tables_generator dec_next all_nodes)
-                  node_ips
-                  topology
-              )
-              topology
-              {| IpSrc := node_ips src; IpDest := node_ips dest |}
-              src
-          ).
+          always_reaches_state_after_bounded_steps
+            host_ip
+            (
+              generate_openflow_entries
+                (exhaustive_routing_tables_generator dec_next all_nodes)
+                host_ip
+                topology
+            )
+            topology
+            {| IpSrc := src.(host_ip); IpDest := dest.(host_ip) |}
+            Dropped
+            num_steps
+            NotSentYet.
     Proof.
       intros.
       (* Currently, the definition of validity requires disallowed
          packets to be *immediately* dropped, which simplifies
          this proof. *)
-      exists 1.
-      assert (dec_next src {| Src := src; Dest := dest |} = None).
-      - destruct_with_eqn (dec_next src {| Src := src; Dest := dest |}); try reflexivity.
-        apply disallowed_flow_immediately_dropped with (src := src) (dest := dest) (hop_target := n) in H2; tauto.
+      exists 2.
+      destruct_with_eqn (find (fun switch => if topology (HostNode src) (SwitchNode switch) then true else false) (filter_switches all_nodes)).
       - simpl.
         apply or_intror.
-        eapply dec_next_creates_valid_unique_state_transitions with (current_flow := {| Src := src; Dest := dest |}) in H2; try eassumption; try reflexivity.
-        simpl in H2.
-        constructor; try tauto.
-        intros.
-        apply or_introl, eq_sym.
-        destruct H2.
-        eassert (Dropped = match dec_next src _ with | Some _ => _ | None => Dropped end) by (rewrite H5; reflexivity).
-        rewrite H8.
-        apply H7.
-        assumption.
+        constructor.
+        + exists (EnRoute s).
+          apply find_some in Heqo.
+          destruct Heqo.
+          destruct_with_eqn (topology (HostNode src) (SwitchNode s)); try discriminate.
+          apply EmitPacketFromSrc with (port := p) (src_host := src); try assumption.
+          apply ipv4_eqb_refl.
+        + intros.
+          inversion_clear H4; try tauto.
+          apply or_intror.
+          remember {| Src := src; Dest := dest |} as current_flow.
+          assert (H' : src = current_flow.(Src)) by (rewrite Heqcurrent_flow; reflexivity); rewrite H' in *; clear H'.
+          assert (H' : dest = current_flow.(Dest)) by (rewrite Heqcurrent_flow; reflexivity); rewrite H' in *; clear H'.
+          clear Heqcurrent_flow src dest.
+          simpl in H5.
+          rewrite ipv4_eqb_iff in H5.
+          apply H1 in H5.
+          subst.
+          constructor.
+          * exists Dropped.
+            constructor.
+            apply get_matching_action_drops; try assumption; try (apply exhaustive_routing_tables_generator_valid; assumption).
+            destruct_with_eqn (dec_next first_switch current_flow); try reflexivity.
+            assert (H' := H2).
+            apply path_exists_only_for_valid_flows with (current_flow := current_flow) (first_switch := first_switch) (port := port) in H2; try assumption.
+            enough (policy current_flow = true) by congruence.
+            apply H2.
+            apply no_black_holes with (here := first_switch) (current_flow := current_flow) (hop_target := n) in H'; try assumption.
+            destruct n.
+            --destruct H'.
+              exists (s0 :: x).
+              simpl.
+              tauto.
+            --subst.
+              exists [].
+              assumption.
+          * intros.
+            apply or_introl.
+            inversion_clear H4; try reflexivity;
+            enough (H' : get_matching_action {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |} (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology first_switch) = Drop) by (rewrite H5 in H'; discriminate);
+            apply get_matching_action_drops; try assumption; try (apply exhaustive_routing_tables_generator_valid; assumption);
+            destruct_with_eqn (dec_next first_switch current_flow); try reflexivity;
+            assert (H' := H2);
+            apply no_black_holes with (topology := topology) (policy := policy) (current_flow := current_flow) (here := first_switch) (hop_target := n) in H2; try assumption;
+            apply path_exists_only_for_valid_flows with (current_flow := current_flow) (first_switch := first_switch) (port := port) in H'; try assumption;
+            enough (H'' : policy current_flow = true) by (rewrite H3 in H''; discriminate);
+            apply H';
+            (destruct n; [
+              destruct H2;
+              exists (s0 :: x);
+              simpl;
+              tauto |
+              subst;
+              exists [];
+              simpl;
+              assumption
+            ]).
+      - apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := 1); try omega.
+        apply or_intror.
+        apply filter_listing_nodes in H0.
+        destruct H0.
+        destruct H0.
+        constructor.
+        + exists Dropped.
+          apply DropPacketAtStart with (src_host := src).
+          intros.
+          destruct_with_eqn (topology (HostNode src) (SwitchNode switch)); try reflexivity.
+          apply find_none with (x := switch) in Heqo; try (rewrite Heqo0 in Heqo; discriminate).
+          apply H5.
+        + intros.
+          apply or_introl.
+          inversion_clear H6; try reflexivity.
+          simpl in H7.
+          rewrite ipv4_eqb_iff in H7.
+          apply H1 in H7.
+          subst.
+          apply find_none with (x := first_switch) in Heqo; try (rewrite H8 in Heqo; discriminate).
+          apply H5.
     Qed.
 
-    Theorem openflow_rules_generator_validity : forall topology policy paths all_nodes node_ips,
+    Theorem openflow_rules_generator_validity : forall topology policy paths all_nodes host_ip,
       valid_topology topology
         -> all_pairs_paths_valid topology policy paths
         -> Listing all_nodes
-        -> Injective node_ips
+        -> Injective host_ip
         -> valid_openflow_entries
           topology
           policy
-          node_ips
+          host_ip
           (
             generate_openflow_entries
             (
@@ -1267,23 +1483,26 @@ Section Node.
               (all_pairs_paths_dec_next_node_generator paths topology policy)
               all_nodes
             )
-            node_ips
+            host_ip
             topology
           ).
     Proof.
       intros.
       set (dec_next := all_pairs_paths_dec_next_node_generator paths topology policy).
       set (tables := exhaustive_routing_tables_generator dec_next all_nodes).
-      set (openflow_entries := generate_openflow_entries tables node_ips topology).
+      set (openflow_entries := generate_openflow_entries tables host_ip topology).
       assert (dec_next_node_valid topology policy dec_next) by (apply all_pairs_paths_dec_generator_valid; assumption).
       assert (routing_tables_valid tables dec_next) by (apply exhaustive_routing_tables_generator_valid; assumption).
       constructor; intros.
-      - unfold dec_next_node_valid in H3.
+      - assert (H' := H).
+        apply no_isolated_hosts with (host := src_node) in H.
+        destruct H.
+        destruct_with_eqn (topology (HostNode src_node) (SwitchNode x)); try tauto.
+        unfold dec_next_node_valid in H3.
         assert (dec_next_node_valid topology policy dec_next) by (apply all_pairs_paths_dec_generator_valid; assumption).
-        assert (H' := H7).
-        apply path_exists_only_for_valid_flows with (current_flow := {| Src := src_node; Dest := dest_node |}) in H7; try (simpl; assumption).
-        simpl in H7.
-        assert ((policy {| Src := src_node; Dest := dest_node |} = true \/ src_node = dest_node) <-> should_arrive policy src_node dest_node = true). {
+        assert (H'' := H7).
+        apply path_exists_only_for_valid_flows with (current_flow := {| Src := src_node; Dest := dest_node |}) (first_switch := x) (port := p) in H7; try (simpl; assumption).
+        assert ((policy {| Src := src_node; Dest := dest_node |} = true) <-> should_arrive policy src_node dest_node = true). {
           unfold should_arrive.
           repeat match goal with
           | [ |- context[if ?x then _ else _] ] => destruct x
@@ -1291,81 +1510,107 @@ Section Node.
           end.
         }
         rewrite H8 in H7.
-        clear H8.
         destruct_with_eqn (should_arrive policy src_node dest_node).
-        + clear Heqb.
-          assert (exists path, _) by (apply H7; reflexivity).
+        + assert (exists path, _) by (apply H7; reflexivity).
           clear H7.
-          destruct H8.
-          exists (S (length x)).
-          remember {| Src := src_node; Dest := dest_node |} as flow.
-          assert (node_ips flow.(Src) = IpSrc packet) by (rewrite <- H5, Heqflow; tauto).
-          assert (node_ips flow.(Dest) = IpDest packet) by (rewrite <- H6, Heqflow; tauto).
-          clear H5 H6 Heqflow.
-          destruct packet.
-          simpl in H8, H9.
-          subst.
-          dependent induction x generalizing src_node; try (simpl in H7; subst; apply reaches_arrived_state_from_destination_in_one_step).
-          assert ({src_node = flow0.(Dest)} + {src_node <> flow0.(Dest)}) by (apply Node_eq_dec).
-          destruct H5.
-          * subst.
-            apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := 1); try omega.
-            apply reaches_arrived_state_from_destination_in_one_step.
-          * destruct H7.
-            apply IHx in H6; try assumption.
-            remember (a :: x) as path.
-            assert (S (length x) = length path) by (rewrite Heqpath; simpl; reflexivity).
-            rewrite H7 in H6.
-            clear Heqpath H7.
-            simpl.
-            apply or_intror.
-            remember (length path) as remaining_steps; clear Heqremaining_steps path.
-            eassert (_ /\ _) by (apply dec_next_creates_valid_unique_state_transitions with (policy := policy) (dec_next := dec_next) (current_flow := flow0) (all_nodes := all_nodes) (openflow_entries := openflow_entries); try eassumption; eauto).
-            destruct H7.
-            constructor; try assumption.
-            intros.
-            apply H8 in H9.
-            subst.
-            rewrite H5.
+          destruct H9.
+          exists (1 + (length (filter_switches all_nodes) + 1) + 1).
+          simpl.
+          apply or_intror.
+          constructor.
+          * exists (EnRoute x).
+            apply EmitPacketFromSrc with (port := p) (src_host := src_node); try assumption.
+            apply ipv4_eqb_iff.
             assumption.
-        + unfold should_arrive in Heqb.
-          assert (policy {| Src := src_node; Dest := dest_node |} = false) by (destruct (policy {| Src := src_node; Dest := dest_node |}); firstorder discriminate).
-          assert (src_node <> dest_node) by (destruct (Node_eq_dec src_node dest_node), (policy {| Src := src_node; Dest := dest_node |}); try discriminate; assumption).
-          clear Heqb H7.
-          destruct packet.
-          unfold openflow_entries, tables.
+          * intros.
+            apply always_reaches_state_after_bounded_steps_combination with (mid_state := ReceivedAtHost dest_node); try (destruct packet; simpl in H5, H6; subst; apply reaches_arrived_state_from_destination_in_one_step).
+            inversion_clear H9.
+            --rewrite <- H5 in H10.
+              rewrite ipv4_eqb_iff in H10.
+              apply H2 in H10.
+              subst.
+              clear x Heqo H7.
+              assert (H''' := H'').
+              apply path_exists_only_for_valid_flows with (current_flow := {| Src := src_node; Dest := dest_node |}) (first_switch := first_switch) (port := port) in H''; try assumption.
+              rewrite H8 in H''.
+              assert (exists _, _) by (apply H''; reflexivity); clear H''.
+              destruct H7.
+              clear H H11.
+              destruct packet; simpl in H5, H6; subst.
+              apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := length x + 1).
+              ++dependent induction x generalizing first_switch.
+                **simpl in H7.
+                  apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := 1); try omega.
+                  simpl.
+                  apply or_intror.
+                  assert (_ /\ _) by (apply dec_next_creates_valid_unique_state_transitions with (policy := policy) (all_nodes := all_nodes) (current_flow := {| Src := src_node; Dest := dest_node |}) (here := first_switch); try eassumption; eauto).
+                  simpl in H.
+                  constructor; try tauto.
+                  destruct H.
+                  intros.
+                  specialize (H5 new_state0).
+                  rewrite H7 in H5.
+                  apply or_introl, eq_sym, H5.
+                  assumption.
+                **destruct H7.
+                  simpl.
+                  apply or_intror.
+                  assert (_ /\ _) by (apply dec_next_creates_valid_unique_state_transitions with (policy := policy) (all_nodes := all_nodes) (current_flow := {| Src := src_node; Dest := dest_node |}) (here := first_switch); try eassumption; eauto).
+                  simpl in H6.
+                  constructor; try tauto.
+                  destruct H6.
+                  intros.
+                  specialize (H7 new_state0).
+                  rewrite H in H7.
+                  assert (new_state0 = EnRoute a) by (apply H7; assumption).
+                  subst.
+                  apply IHx.
+                  assumption.
+              ++enough (length x <= length (filter_switches all_nodes)) by omega.
+                apply all_paths_acyclic with (path := x) (here := first_switch) (current_flow := {| Src := src_node; Dest := dest_node |}) in H'''; try assumption.
+                inversion_clear H'''.
+                apply pidgeonhole_principle; try assumption.
+                intros.
+                apply filter_listing_nodes; assumption.
+            --apply no_isolated_hosts with (host := src_host) in H'.
+              destruct H'.
+              specialize (H10 x1).
+              rewrite H10 in H9.
+              tauto.
+        + destruct packet.
           simpl in H5, H6.
-          rewrite <- H5, <- H6.
-          eapply disallowed_packet_eventually_dropped; eassumption.
+          subst.
+          apply disallowed_packet_eventually_dropped with (policy := policy); try assumption.
+          destruct (policy {| Src := src_node; Dest := dest_node |}); try reflexivity.
+          assert (true = true) by reflexivity.
+          apply H8 in H5.
+          discriminate.
       - unfold openflow_entries, generate_openflow_entries.
-        set (node_tables := tables node).
-        simpl.
-        constructor.
-        tauto.
-        dependent induction node_tables; simpl; try tauto.
+        set (switch_tables := tables switch).
+        dependent induction switch_tables; simpl; try tauto.
         constructor; try assumption.
-        destruct_with_eqn (topology node a.(snd)); try tauto.
-        eexists; eassumption.
+        destruct_with_eqn (topology (SwitchNode switch) a.(snd)); try tauto.
+        destruct (is_switch a.(snd)); eexists; eassumption.
     Qed.
 
     Definition openflow_rules_generator
       (topology : {t : network_topology | valid_topology t})
       (policy : static_network_policy)
-      (paths : {pairs_paths : all_pairs_paths | all_pairs_paths_valid (proj1_sig topology) policy pairs_paths})
+      (paths : {pairs_paths : all_pairs_paths | all_pairs_paths_valid topology.(proj1_sig) policy pairs_paths})
       (all_nodes : {enumeration : list Node | Listing enumeration})
-      (node_ips : {ips : node_ip_map | Injective ips})
-    : {entries : node_openflow_entry_map | valid_openflow_entries (proj1_sig topology) policy (proj1_sig node_ips) entries}.
+      (host_ip : {ips : host_ip_map | Injective ips})
+    : {entries : switch_openflow_entry_map | valid_openflow_entries topology.(proj1_sig) policy host_ip.(proj1_sig) entries}.
     Proof.
       econstructor.
-      apply openflow_rules_generator_validity with (paths := proj1_sig paths) (all_nodes := proj1_sig all_nodes); exact (proj2_sig _).
+      apply openflow_rules_generator_validity with (paths := paths.(proj1_sig)) (all_nodes := all_nodes.(proj1_sig)); exact _.(proj2_sig).
     Defined.
 
-    Theorem dynamic_controller_generator_validity : forall (policy_state : Set) topology (policy : @dynamic_network_policy policy_state) paths all_nodes node_ips,
+    Theorem dynamic_controller_generator_validity : forall (policy_state : Set) topology (policy : @dynamic_network_policy policy_state) paths all_nodes host_ip,
       valid_topology topology
         -> dynamic_policy_valid topology policy paths
         -> Listing all_nodes
-        -> Injective node_ips
-        -> controller_implements_policy topology policy node_ips {|
+        -> Injective host_ip
+        -> controller_implements_policy topology policy host_ip {|
           controller_system := policy.(policy_system);
           controller_state_decider := fun state =>
           (
@@ -1375,7 +1620,7 @@ Section Node.
               (all_pairs_paths_dec_next_node_generator paths topology (policy.(policy_state_decider) state))
               all_nodes
             )
-            node_ips
+            host_ip
             topology
           )
         |}.
@@ -1410,61 +1655,79 @@ Section Node.
       {policy_state : Set}
       (topology : {t : network_topology | valid_topology t})
       (policy : @dynamic_network_policy policy_state)
-      (paths: {pairs_paths : all_pairs_paths | dynamic_policy_valid (proj1_sig topology) policy pairs_paths})
+      (paths: {pairs_paths : all_pairs_paths | dynamic_policy_valid topology.(proj1_sig) policy pairs_paths})
       (all_nodes : {enumeration : list Node | Listing enumeration})
-      (node_ips : {ips : node_ip_map | Injective ips})
-    : {controller : @network_controller policy_state | controller_implements_policy (proj1_sig topology) policy (proj1_sig node_ips) controller}.
+      (host_ip : {ips : host_ip_map | Injective ips})
+    : {controller : @network_controller policy_state | controller_implements_policy topology.(proj1_sig) policy host_ip.(proj1_sig) controller}.
     Proof.
       econstructor.
-      apply dynamic_controller_generator_validity with (paths := proj1_sig paths) (all_nodes := proj1_sig all_nodes); exact (proj2_sig _).
+      apply dynamic_controller_generator_validity with (paths := paths.(proj1_sig)) (all_nodes := all_nodes.(proj1_sig)); exact _.(proj2_sig).
     Defined.
   End OpenFlow.
 End Node.
 
 Ltac prove_decidable_equality :=
-  let Node := match goal with
-  | [ |- forall x y : ?Node, {x = y} + {x <> y} ] => Node
+  let S := match goal with
+  | [ |- forall x y : ?S, {x = y} + {x <> y} ] => S
   | _ => fail 1 "Unexpected goal in decidable equality proof"
   end in
   intros;
   repeat match goal with
-  | [ x : Node |- _ ] => destruct x
+  | [ x : S |- _ ] => destruct x
   end;
   firstorder discriminate.
 
 Ltac prove_valid_topology topology :=
-  let Node := match goal with
-  | [ |- {t : @network_topology ?Node | valid_topology t} ] => Node
+  let Switch := match goal with
+  | [ |- {t : @network_topology ?Switch _ | valid_topology t} ] => Switch
   | _ => fail 1 "Unexpected goal in valid topology proof"
   end in
+  let Host := match goal with
+  | [ |- {t : @network_topology _ ?Host | valid_topology t} ] => Host
+  end in
   apply exist with (x := topology);
-  unfold valid_topology;
+  constructor;
   intros;
   repeat match goal with
-  | [ x : Node |- _ ] => destruct x
+  | [ x : @Node Switch Host |- _ ] => destruct x
+  | [ x : Switch |- _ ] => destruct x
+  | [ x : Host |- _ ] => destruct x
   end;
   simpl;
   try reflexivity;
-  try firstorder discriminate.
+  match goal with
+  | [ |- exists _, _ ] =>
+    let adjacent_switch := fresh "adjacent_switch" in
+      evar (adjacent_switch : Switch);
+      exists adjacent_switch;
+      destruct_with_eqn adjacent_switch; repeat match goal with
+      | [ H : adjacent_switch = ?val |- True ] => instantiate (adjacent_switch := val); apply I
+      | _ => idtac
+      end; discriminate
+  | _ => firstorder discriminate
+  end.
 
-Ltac prove_injective_ips node_ips :=
-  let Node := match goal with
-  | [ |- {ips : @node_ip_map ?Node | Injective ips} ] => Node
+Ltac prove_injective_ips host_ip :=
+  let Host := match goal with
+  | [ |- {ips : @host_ip_map ?Host | Injective ips} ] => Host
   | _ => fail 1 "Unexpected goal in injective IPs proof"
   end in
-  apply exist with (x := node_ips);
+  apply exist with (x := host_ip);
   unfold Injective;
   intros;
   repeat match goal with
-  | [ x : Node |- _ ] => destruct x
+  | [ x : Host |- _ ] => destruct x
   end;
   try reflexivity;
   try discriminate.
 
-Ltac enumerate_finite_set :=
-  let Node := match goal with
-  | [ |- {l : list ?Node | Listing l} ] => Node
+Ltac enumerate_nodes :=
+  let Switch := match goal with
+  | [ |- {l : list (@Node ?Switch ?Host) | Listing l} ] => Switch
   | _ => fail 1 "Unexpected goal in finite set enumeration"
+  end in
+  let Host := match goal with
+  | [ |- {l : list (@Node ?Switch ?Host) | Listing l} ] => Host
   end in
   econstructor;
   unfold Listing, Full;
@@ -1473,11 +1736,15 @@ Ltac enumerate_finite_set :=
     idtac |
     intros;
     match goal with
-    | [ node : Node |- _ ] => destruct node
+    | [ node : @Node Switch Host |- _ ] => destruct node
+    end;
+    match goal with
+    | [ switch : Switch |- _ ] => destruct switch
+    | [ host : Host |- _ ] => destruct host
     end;
     unshelve (
       let cdr := fresh "cdr" in
-        evar (cdr : list Node);
+        evar (cdr : list (@Node Switch Host));
         let cdr' := (eval unfold cdr in cdr) in
           clear cdr;
           match goal with
@@ -1535,24 +1802,26 @@ Fixpoint find_index {Node} (Node_eq_dec : forall (n1 n2 : Node), {n1 = n2} + {n1
     end
   end.
 
-Fixpoint next_matrix_to_paths {Node} (Node_eq_dec : forall (n1 n2 : Node), {n1 = n2} + {n1 <> n2}) all_nodes max_length next_matrix nodeA nodeB :=
-  if Node_eq_dec nodeA nodeB
-  then Some []
-  else match max_length with
+Fixpoint next_matrix_to_paths {Switch} {Host} (Node_eq_dec : forall (n1 n2 : @Node Switch Host), {n1 = n2} + {n1 <> n2}) all_nodes max_length (next_matrix : list (list (option (@Node Switch Host)))) switchA hostB :=
+  match max_length with
   | 0 => None
   | S max_length' =>
-    let indexA := find_index Node_eq_dec all_nodes nodeA in
-    let indexB := find_index Node_eq_dec all_nodes nodeB in
+    let indexA := find_index Node_eq_dec all_nodes (SwitchNode switchA) in
+    let indexB := find_index Node_eq_dec all_nodes (HostNode hostB) in
     match indexA, indexB with
     | Some iA, Some iB =>
       match nth_error next_matrix iA with
       | Some nodeA_row =>
         match nth_error nodeA_row iB with
-        | Some (Some hop) =>
-          match next_matrix_to_paths Node_eq_dec all_nodes max_length' next_matrix hop nodeB with
+        | Some (Some (SwitchNode hop)) =>
+          match next_matrix_to_paths Node_eq_dec all_nodes max_length' next_matrix hop hostB with
           | Some cdr_path => Some (hop :: cdr_path)
           | None => None
           end
+        | Some (Some (HostNode host)) =>
+          if Node_eq_dec (HostNode host) (HostNode hostB)
+          then Some []
+          else None
         | _ => None
         end
       | None => None
@@ -1562,7 +1831,7 @@ Fixpoint next_matrix_to_paths {Node} (Node_eq_dec : forall (n1 n2 : Node), {n1 =
   end.
 
 (* Implements the Floyd-Warshall algorithm *)
-Ltac generate_all_pairs_paths Node Node_eq_dec topology all_nodes costs :=
+Ltac generate_all_pairs_paths Node Node_eq_dec Switch_eq_dec Host_eq_dec topology all_nodes costs :=
   let nodes := (eval unfold all_nodes in all_nodes.(proj1_sig)) in
   let dists := fresh "dists" in
   let nexts := fresh "nexts" in
@@ -1648,16 +1917,37 @@ Ltac generate_all_pairs_paths Node Node_eq_dec topology all_nodes costs :=
       set (k := S k')
   );
   clear k;
-  exact (next_matrix_to_paths Node_eq_dec nodes num_nodes nexts).
+  let all_switches := (constr:(filter_switches nodes)) in
+  let all_hosts := (constr:(filter_hosts nodes)) in
+  let paths_grid := eval compute in (map (fun switchA =>
+    map (fun hostB =>
+      next_matrix_to_paths Node_eq_dec nodes num_nodes nexts switchA hostB
+    ) all_hosts
+  ) all_switches) in
+  exact (fun switch host =>
+    match find_index Switch_eq_dec all_switches switch, find_index Host_eq_dec all_hosts host with
+    | Some iA, Some iB =>
+      match nth_error paths_grid iA with
+      | Some switch_row =>
+        match nth_error switch_row iB with
+        | Some path => path
+        | None => None
+        end
+      | None => None
+      end
+    | _, _ => None
+    end
+  ).
 
-Ltac prove_dynamic_policy_valid Node topology policy costs Node_eq_dec all_nodes paths policy_invariant :=
+Ltac prove_dynamic_policy_valid Switch Host topology policy costs Switch_eq_dec Host_eq_dec all_nodes paths policy_invariant :=
   let invariant_implies_path_exists := fresh "invariant_implies_path_exists" in
   let invariant_initial := fresh "invariant_initial" in
   let invariant_step := fresh "invariant_step" in
-  assert (invariant_implies_path_exists : forall st current_flow,
+  assert (invariant_implies_path_exists : forall st current_flow first_switch,
     policy_invariant st
       -> policy_state_decider policy st current_flow = true
-      -> paths current_flow.(Src) current_flow.(Dest) = None
+      -> (if topology (HostNode current_flow.(Src)) (SwitchNode first_switch) then True else False)
+      -> paths first_switch current_flow.(Dest) = None
       -> False
   );
   [
@@ -1695,79 +1985,109 @@ Ltac prove_dynamic_policy_valid Node topology policy costs Node_eq_dec all_nodes
           apply H;
           destruct_with_eqn (cond); try assumption;
           apply invariant_step; assumption
-        | _ => idtac "in"
         end
-      | _ => idtac "out"
       end
     | [ |- forall state, policy_invariant state -> all_pairs_paths_valid _ _ _ ] =>
       intros;
       constructor;
       intros;
       match goal with
-      | [ |- match paths _ _ with | Some _ => _ | None => True end ] =>
-        repeat match goal with
-        | [ n : Node |- _ ] => destruct n
-        end;
+      | [ |- match paths ?src ?dest with | Some _ => _ | None => True end ] =>
+        destruct src, dest;
+        unfold paths;
         simpl;
         tauto
-      | [ |- match paths ?current_flow.(Src) ?current_flow.(Dest) with | Some _ => True | None => False end ] =>
-        destruct_with_eqn (paths current_flow.(Src) current_flow.(Dest));
+      | [ |- match paths ?first_switch ?current_flow.(Dest) with | Some _ => True | None => False end ] =>
+        destruct_with_eqn (paths first_switch current_flow.(Dest));
         [ tauto | idtac ];
         destruct current_flow;
         eapply invariant_implies_path_exists;
-        eassumption
+        try eassumption;
+        match goal with
+        | [ H : ?cond = Some _ |- if ?cond then True else False ] => rewrite H; tauto
+        end
       | [ |- exists x, generates_decreasing_costs topology paths x ] =>
         exists costs;
         constructor;
         unfold only_positive_costs;
         intros;
         repeat match goal with
-        | [ n : Node |- _ ] => destruct n; simpl
-        end;
-        intuition
+        | [ n : @Node Switch Host |- _ ] => destruct n
+        | [ s : Switch |- _ ] => destruct s
+        | [ h : Host |- _ ] => destruct h
+        end; unfold costs, topology, paths;
+        simpl;
+        solve [ intuition ]
       end
+    | _ => idtac
     end
   ].
 
 Section NetworkExample.
-  Local Inductive ExampleVertex :=
-  | A
-  | B
-  | C
-  | D
-  | E
-  | F
+  Local Inductive ExampleSwitch :=
+  | sA
+  | sB
+  | sC
+  | sD
+  | sE
+  | sF
   .
 
-  Definition all_nodes : {l : list ExampleVertex | Listing l} := ltac:(enumerate_finite_set).
-  Definition ExampleVertex_eq_dec : forall x y : ExampleVertex, {x = y} + {x <> y} := ltac:(prove_decidable_equality).
+  Local Inductive ExampleHost :=
+  | hA
+  | hB
+  | hC
+  | hD
+  | hE
+  | hF
+  .
+
+  Definition all_nodes : {l : list (@Node ExampleSwitch ExampleHost) | Listing l} := ltac:(enumerate_nodes).
+
+  Definition ExampleSwitch_eq_dec : forall x y : ExampleSwitch, {x = y} + {x <> y} := ltac:(prove_decidable_equality).
+  Definition ExampleHost_eq_dec : forall x y : ExampleHost, {x = y} + {x <> y} := ltac:(prove_decidable_equality).
+  Definition ExampleNode_eq_dec : forall x y : @Node ExampleSwitch ExampleHost, {x = y} + {x <> y} := @Node_eq_dec ExampleSwitch ExampleHost ExampleSwitch_eq_dec ExampleHost_eq_dec.
+  Definition portNo := natToWord 16.
 
   (*
     example_topology:
 
-        B ------> E
-      / | \       ↑
-     A  |5 D <--- F
-      \ | /
-        C
+       hB --- sB ----> sE      hE
+             / | \   /          |
+    hA --- sA  |  sD ---- sF ---|
+            \  | /   \      ↖______- hF
+              sC - hC \__- hD
   *)
   Local Definition example_topology n1 n2 :=
     match n1, n2 with
     (* Arbitrarily, the ports are numbered in increasing
        order at each node. *)
-    | A, B => Some (natToWord 16 1)
-    | B, A => Some (natToWord 16 1)
-    | A, C => Some (natToWord 16 2)
-    | C, A => Some (natToWord 16 1)
-    | B, C => Some (natToWord 16 2)
-    | C, B => Some (natToWord 16 2)
-    | B, D => Some (natToWord 16 3)
-    | D, B => Some (natToWord 16 1)
-    | B, E => Some (natToWord 16 4)
-    | C, D => Some (natToWord 16 3)
-    | D, C => Some (natToWord 16 2)
-    | F, D => Some (natToWord 16 1)
-    | F, E => Some (natToWord 16 2)
+    | HostNode hA, SwitchNode sA => Some (portNo 1)
+    | SwitchNode sA, HostNode hA => Some (portNo 1)
+    | SwitchNode sA, SwitchNode sB => Some (portNo 2)
+    | SwitchNode sA, SwitchNode sC => Some (portNo 3)
+    | HostNode hB, SwitchNode sB => Some (portNo 1)
+    | SwitchNode sB, SwitchNode sA => Some (portNo 1)
+    | SwitchNode sB, HostNode hB => Some (portNo 2)
+    | SwitchNode sB, SwitchNode sC => Some (portNo 3)
+    | SwitchNode sB, SwitchNode sD => Some (portNo 4)
+    | SwitchNode sB, SwitchNode sE => Some (portNo 5)
+    | HostNode hC, SwitchNode sC => Some (portNo 1)
+    | SwitchNode sC, SwitchNode sA => Some (portNo 1)
+    | SwitchNode sC, SwitchNode sB => Some (portNo 2)
+    | SwitchNode sC, HostNode hC => Some (portNo 3)
+    | SwitchNode sC, SwitchNode sD => Some (portNo 4)
+    | HostNode hD, SwitchNode sD => Some (portNo 1)
+    | SwitchNode sD, SwitchNode sB => Some (portNo 1)
+    | SwitchNode sD, SwitchNode sC => Some (portNo 2)
+    | SwitchNode sD, HostNode hD => Some (portNo 3)
+    | SwitchNode sD, SwitchNode sE => Some (portNo 4)
+    | SwitchNode sD, SwitchNode sF => Some (portNo 5)
+    | HostNode hE, SwitchNode sF => Some (portNo 1)
+    | SwitchNode sE, SwitchNode sD => Some (portNo 1)
+    | HostNode hF, SwitchNode sF => Some (portNo 1)
+    | SwitchNode sF, SwitchNode sD => Some (portNo 1)
+    | SwitchNode sF, HostNode hE => Some (portNo 2)
     | _, _ => None
     end.
 
@@ -1777,98 +2097,90 @@ Section NetworkExample.
   path from F of [D; C; B; E]. However, if the (C, B) edge
   has a large cost, then the total cost of [C; A; B; E] is less
   than the cost of [D; C; B; E]. *)
-  Definition example_costs n1 port :=
+  Definition example_costs (n1 : @Node ExampleSwitch ExampleHost) port :=
     match n1 with
-    | C => if weqb port (natToWord 16 2) then 5 else 1
+    | SwitchNode sC => if weqb port (natToWord 16 2) then 5 else 1
     | _ => 1
     end.
 
-  Local Definition example_all_pairs_paths : @all_pairs_paths ExampleVertex := ltac:(generate_all_pairs_paths ExampleVertex ExampleVertex_eq_dec example_topology all_nodes example_costs).
+  Local Definition example_all_pairs_paths : @all_pairs_paths ExampleSwitch ExampleHost := ltac:(generate_all_pairs_paths (@Node ExampleSwitch ExampleHost) ExampleNode_eq_dec ExampleSwitch_eq_dec ExampleHost_eq_dec example_topology all_nodes example_costs).
 
-  Definition policy_satisfiable (policy : @static_network_policy ExampleVertex) := forall n1 n2,
-    policy {| Src := n1; Dest := n2 |} = true -> example_all_pairs_paths n1 n2 <> None.
-
-  Local Definition example_static_policy current_flow :=
-    match current_flow.(Src), current_flow.(Dest) with
-    | A, F | E, A => false
-    | A, _ | _, A | F, _ => true
-    | _, _ => false
-    end.
-
-  Definition ExampleVertex_eqb x y := if ExampleVertex_eq_dec x y then true else false.
+  Definition ExampleHost_eqb x y := if ExampleHost_eq_dec x y then true else false.
 
   Fixpoint in_pair_list pair_list current_flow :=
     match pair_list with
     | [] => false
-    | (src, dest) :: cdr => (ExampleVertex_eqb src current_flow.(Src) && ExampleVertex_eqb dest current_flow.(Dest)) || in_pair_list cdr current_flow
+    | (src, dest) :: cdr => (ExampleHost_eqb src current_flow.(Src) && ExampleHost_eqb dest current_flow.(Dest)) || in_pair_list cdr current_flow
     end.
 
   (*
     Initial state: A can send to anywhere that it can reach
     After each successful packet from x to y, policy updates so y can also send to x, provided that y can reach x
   *)
-  Definition example_dynamic_policy : @dynamic_network_policy ExampleVertex (list (ExampleVertex * ExampleVertex)) := {|
+  Definition example_dynamic_policy : @dynamic_network_policy ExampleHost (list (ExampleHost * ExampleHost)) := {|
     policy_system := {|
-      Initial := [(A, B); (A, C); (A, D)];
+      Initial := [(hA, hB); (hA, hC); (hA, hD); (hA, hE)];
       Step := fun current_state last_flow =>
-        if ExampleVertex_eq_dec F last_flow.(Src)
-        then current_state
-        else if ExampleVertex_eq_dec E last_flow.(Dest)
+        if ExampleHost_eq_dec hF last_flow.(Src)
         then current_state
         else (last_flow.(Dest), last_flow.(Src)) :: current_state
     |};
     policy_state_decider := in_pair_list
   |}.
 
-  Definition verified_example_paths : {paths : @all_pairs_paths ExampleVertex | dynamic_policy_valid example_topology example_dynamic_policy paths}.
+  Definition verified_example_paths : {paths : @all_pairs_paths ExampleSwitch ExampleHost | dynamic_policy_valid example_topology example_dynamic_policy paths}.
   Proof.
-    prove_dynamic_policy_valid ExampleVertex example_topology example_dynamic_policy example_costs ExampleVertex_eq_dec all_nodes example_all_pairs_paths (fix contains_valid_entries state := match state with
+    prove_dynamic_policy_valid ExampleSwitch ExampleHost example_topology example_dynamic_policy example_costs ExampleSwitch_eq_dec ExampleHost_eq_dec all_nodes example_all_pairs_paths (fix contains_valid_entries (state : list (ExampleHost * ExampleHost)) := match state with
     | [] => True
-    | (src, dest) :: cdr => src <> E /\ dest <> F /\ contains_valid_entries cdr
+    | (src, dest) :: cdr => dest <> hF /\ contains_valid_entries cdr
     end); intros.
-    - unfold example_dynamic_policy in *; simpl in *; destruct current_flow; dependent induction st; try discriminate; simpl in *.
+    - intros; unfold example_dynamic_policy in *; simpl in *; destruct current_flow; dependent induction st; intros; try discriminate H0; simpl in *; intros.
       repeat match goal with
       | [ H : let (_, _) := ?a in _ |- _ ] => destruct a
       | [ H : _ || _ = true |- _ ] => rewrite orb_true_iff in H
       | [ H : _ && _ = true |- _ ] => rewrite andb_true_iff in H
       | [ H : _ /\ _ |- _ ] => destruct H
       | [ H : _ \/ _ |- _ ] => destruct H
-      | [ H : ExampleVertex_eqb ?a ?b = true |- _ ] => assert (a = b) by (destruct a, b; simpl in H; try reflexivity; discriminate); clear H; subst
-      end; simpl in *; eapply IHst; try eassumption; repeat match goal with
-      | [ x : ExampleVertex |- _ ] => destruct x
-      end; try discriminate; tauto.
+      | [ H : ExampleHost_eqb ?a ?b = true |- _ ] => assert (a = b) by (destruct a, b; simpl in H; try reflexivity; discriminate H); clear H; subst
+      end; apply IHst with (Src0 := Src0) (Dest0 := Dest0) (first_switch := first_switch); try assumption; repeat match goal with
+      | [ H : example_all_pairs_paths ?s ?h = _ |- _ ] => destruct s, h; unfold example_all_pairs_paths in H; simpl in H; try discriminate H
+      end; destruct Src0; try tauto.
     - firstorder discriminate.
-    - repeat match goal with
+    - intros; repeat match goal with
     | [ f : flow |- _ ] => destruct f
-    | [ x : ExampleVertex |- _ ] => destruct x; simpl
+    | [ x : @Node ExampleSwitch ExampleHost |- _ ] => destruct x; simpl
+    | [ x : ExampleSwitch |- _ ] => destruct x; simpl
+    | [ x : ExampleHost |- _ ] => destruct x; simpl
     | [ |- _ /\ _ ] => constructor
     end; congruence.
   Defined.
 
-  Definition example_node_ips_nat node :=
+  Definition example_host_ip_nat node :=
     match node with
-    | A => (10, 0, 0, 1)
-    | B => (10, 0, 0, 2)
-    | C => (10, 0, 0, 3)
-    | D => (10, 0, 0, 4)
-    | E => (10, 0, 0, 5)
-    | F => (10, 0, 0, 6)
+    | hA => (10, 0, 0, 1)
+    | hB => (10, 0, 0, 2)
+    | hC => (10, 0, 0, 3)
+    | hD => (10, 0, 0, 4)
+    | hE => (10, 0, 0, 5)
+    | hF => (10, 0, 0, 6)
     end.
 
-  Definition node_ips node :=
-    match example_node_ips_nat node with
+  Definition host_ip node :=
+    match example_host_ip_nat node with
     | (n1, n2, n3, n4) => (natToWord 8 n1, natToWord 8 n2, natToWord 8 n3, natToWord 8 n4)
     end.
 
   Definition generated_dynamic_controller := @dynamic_controller_generator
-    ExampleVertex
-    ExampleVertex_eq_dec
-    (list (ExampleVertex * ExampleVertex))
+    ExampleSwitch
+    ExampleHost
+    ExampleSwitch_eq_dec
+    ExampleHost_eq_dec
+    (list (ExampleHost * ExampleHost))
     ltac:(prove_valid_topology example_topology)
     example_dynamic_policy
     verified_example_paths
     all_nodes
-    ltac:(prove_injective_ips node_ips).
+    ltac:(prove_injective_ips host_ip).
 End NetworkExample.
 
 Require Extraction.

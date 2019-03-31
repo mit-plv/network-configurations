@@ -56,8 +56,8 @@ let generate_flow_mod_message entry = FlowModMsg {
     )
   };
   actions = match entry.action with
-    | ForwardToPort p -> [Output (PhysicalPort (int32_to_int (word_to_int32 p)))]
-    | ReceiveAtDest -> [Output (PhysicalPort 99); Output(Controller 1024)]
+    | ForwardToSwitch p -> [Output (PhysicalPort (int32_to_int (word_to_int32 p)))]
+    | ForwardToDest p -> [Output (PhysicalPort (int32_to_int (word_to_int32 p))); Output(Controller 1024)]
     | Drop -> []
 }
 
@@ -75,17 +75,17 @@ let delete_all_flows_message = FlowModMsg {
   actions = []
 }
 
-let find_node_with_ip ip32 = List.find all_nodes (fun node -> ip_to_int32 (node_ips node) = ip32)
+let find_host_with_ip ip32 = List.find (filter_hosts all_nodes) (fun host -> ip_to_int32 (host_ip host) = ip32)
 
 (* Note: This requires the user to arrange switch IDs in the same order as their Coq inductive type
  * i.e. the first switch has ID 1, second has ID 2, etc. *)
-let switch_id_to_node sw_id = nth all_nodes (int64_to_int sw_id - 1)
+let switch_id_to_switch sw_id = nth (filter_switches all_nodes) (int64_to_int sw_id - 1)
 
-let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) (state : (exampleVertex * exampleVertex) list) evt =
+let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) (state) evt =
   match evt with
     | `Connect (sw_id, _) ->
       Deferred.all (
-        List.map (generated_dynamic_controller.controller_state_decider state (switch_id_to_node sw_id)) (fun entry ->
+        List.map (generated_dynamic_controller.controller_state_decider state (switch_id_to_switch sw_id)) (fun entry ->
           Async_OpenFlow.OpenFlow0x01.Controller.send ctl sw_id (1l, generate_flow_mod_message entry)
         )
       ) >>= (fun _ -> return state)
@@ -103,18 +103,18 @@ let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) (state : (exampleVer
         if pktIn.reason = ExplicitSend
         then
           let packet = parse_payload pktIn.input_payload
-          in let maybe_src_node = find_node_with_ip (Packet.nwSrc packet)
-          in let maybe_dest_node = find_node_with_ip (Packet.nwDst packet)
-          in match maybe_src_node, maybe_dest_node with
-          | Some src_node, Some dest_node ->
-            let processed_flow = { src = src_node; dest = dest_node }
+          in let maybe_src_host = find_host_with_ip (Packet.nwSrc packet)
+          in let maybe_dest_host = find_host_with_ip (Packet.nwDst packet)
+          in match maybe_src_host, maybe_dest_host with
+          | Some src_host, Some dest_host ->
+            let processed_flow = { src = src_host; dest = dest_host }
             in let new_state = generated_dynamic_controller.controller_system.step state processed_flow
             in Deferred.all (
-              List.mapi all_nodes (fun index node ->
+              List.mapi (filter_switches all_nodes) (fun index switch -> (
                 let dest_switch_id = int_to_int64 (index + 1)
-                in (Async_OpenFlow.OpenFlow0x01.Controller.send ctl dest_switch_id (1l, delete_all_flows_message)
+                in Async_OpenFlow.OpenFlow0x01.Controller.send ctl dest_switch_id (1l, delete_all_flows_message)
                   >>= fun _ -> Deferred.all (
-                    List.map (generated_dynamic_controller.controller_state_decider new_state node) (fun entry ->
+                    List.map (generated_dynamic_controller.controller_state_decider new_state switch) (fun entry ->
                       Async_OpenFlow.OpenFlow0x01.Controller.send ctl dest_switch_id (1l, generate_flow_mod_message entry)
                     )
                   )
