@@ -961,9 +961,6 @@ Section Node.
       | AcceptPacket : forall dest_host,
         ipv4_eqb dest_host.(host_ip) packet.(IpDest) = true
           -> openflow_network_step (ReceivedAtHost dest_host) Arrived
-      | DropPacketAtStart : forall src_host,
-        (forall switch, topology (HostNode src_host) (SwitchNode switch) = None)
-          -> openflow_network_step NotSentYet Dropped
       .
 
       Fixpoint always_reaches_state_after_bounded_steps desired_state num_steps current_state : Prop :=
@@ -1444,27 +1441,14 @@ Section Node.
               simpl;
               assumption
             ]).
-      - apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := 1); try omega.
-        apply or_intror.
+      - apply no_isolated_hosts with (host := src) in H.
+        destruct H.
+        destruct_with_eqn (topology (HostNode src) (SwitchNode x)); try tauto.
+        apply find_none with (x := x) in Heqo; try (rewrite Heqo0 in Heqo; discriminate).
         apply filter_listing_nodes in H0.
         destruct H0.
         destruct H0.
-        constructor.
-        + exists Dropped.
-          apply DropPacketAtStart with (src_host := src).
-          intros.
-          destruct_with_eqn (topology (HostNode src) (SwitchNode switch)); try reflexivity.
-          apply find_none with (x := switch) in Heqo; try (rewrite Heqo0 in Heqo; discriminate).
-          apply H5.
-        + intros.
-          apply or_introl.
-          inversion_clear H6; try reflexivity.
-          simpl in H7.
-          rewrite ipv4_eqb_iff in H7.
-          apply H1 in H7.
-          subst.
-          apply find_none with (x := first_switch) in Heqo; try (rewrite H8 in Heqo; discriminate).
-          apply H5.
+        apply H5.
     Qed.
 
     Theorem openflow_rules_generator_validity : forall topology policy paths all_nodes host_ip,
@@ -1572,11 +1556,6 @@ Section Node.
                 apply pidgeonhole_principle; try assumption.
                 intros.
                 apply filter_listing_nodes; assumption.
-            --apply no_isolated_hosts with (host := src_host) in H'.
-              destruct H'.
-              specialize (H10 x1).
-              rewrite H10 in H9.
-              tauto.
         + destruct packet.
           simpl in H5, H6.
           subst.
