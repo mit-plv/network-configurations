@@ -111,8 +111,8 @@ Section Node.
   :=
     policy current_flow = true /\
     match paths here current_flow.(Dest) with
-    | Some (hop_target' :: _) => hop_target = (SwitchNode hop_target')
-    | Some [] => hop_target = (HostNode current_flow.(Dest))
+    | Some (hop_target' :: _) => hop_target = SwitchNode hop_target'
+    | Some [] => hop_target = HostNode current_flow.(Dest)
     | _ => False
     end.
 
