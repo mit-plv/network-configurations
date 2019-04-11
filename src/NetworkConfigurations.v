@@ -113,7 +113,7 @@ Section Node.
     match paths here current_flow.(Dest) with
     | Some (hop_target' :: _) => hop_target = SwitchNode hop_target'
     | Some [] => hop_target = HostNode current_flow.(Dest)
-    | _ => False
+    | None => False
     end.
 
   Definition edge_costs := Node -> Port -> nat.
@@ -453,7 +453,7 @@ Section Node.
       match paths here current_flow.(Dest) with
       | Some (hop_target :: _) => Some (SwitchNode hop_target)
       | Some [] => Some (HostNode current_flow.(Dest))
-      | _ => None
+      | None => None
       end
     else None.
 
