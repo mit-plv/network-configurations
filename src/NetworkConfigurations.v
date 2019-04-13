@@ -63,9 +63,10 @@ Section Node.
 
     path_exists_only_for_valid_flows : forall current_flow first_switch port,
       topology (HostNode current_flow.(Src)) (SwitchNode first_switch) = Some port
-        ->((policy current_flow = true) <->
-          exists path,
-            is_next_node_path next path first_switch current_flow);
+        -> (
+          (policy current_flow = true) <->
+          exists path, is_next_node_path next path first_switch current_flow
+        );
 
     no_black_holes : forall here current_flow hop_target,
       (* TODO: Should this only be a requirement when a policy allows the flow?
@@ -88,8 +89,10 @@ Section Node.
 
   Definition dec_next_node := Switch -> flow -> option Node.
 
-  Definition dec_next_node_valid (topology : network_topology) (policy : static_network_policy) (dec_next : dec_next_node) :=
-    next_node_valid topology policy (fun here current_flow hop_target => dec_next here current_flow = Some hop_target).
+  Definition dec_next_node_valid topology policy dec_next :=
+    next_node_valid topology policy (fun here current_flow hop_target =>
+      dec_next here current_flow = Some hop_target
+    ).
 
   Fixpoint is_path_in_topology (topology : network_topology) src dest path :=
     match path with
