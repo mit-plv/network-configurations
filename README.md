@@ -1,5 +1,7 @@
 # network-configurations
 
+[![Build Status](https://travis-ci.org/mit-plv/network-configurations.svg?branch=master)](https://travis-ci.org/mit-plv/network-configurations)
+
 Using Coq to derive network configurations from declarative policies
 
 ## Building

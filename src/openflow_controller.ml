@@ -94,12 +94,6 @@ let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) (state) evt =
     | `Message (sw_id, (_xid, msg)) ->
       match msg with
       | PacketInMsg pktIn ->
-        (if pktIn.total_len <> 342 then
-          Printf.printf
-            "switch %Lu: %s\n%!"
-            sw_id
-            (packetIn_to_string pktIn)
-        );
         if pktIn.reason = ExplicitSend
         then
           let packet = parse_payload pktIn.input_payload
@@ -120,16 +114,14 @@ let switch (ctl : Async_OpenFlow.OpenFlow0x01.Controller.t) (state) evt =
                   )
                 )
               )
-            ) >>= (fun _ -> print_endline "sent new flows"; return new_state)
+            ) >>= (fun _ -> return new_state)
           | _, _ -> return state
         else return state
       | ErrorMsg err ->
-        print_endline "error message";
         return state
       | PortStatusMsg ps ->
         return state
       | _ ->
-        print_endline "other";
         return state
 
 let main () =

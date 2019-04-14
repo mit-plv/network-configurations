@@ -1,0 +1,29 @@
+dist: xenial
+language: bash
+sudo: required
+
+install:
+  # We need mininet v2.2.2 to run the tests, but the Xenail ppa repository only has v2.2.1, so build it from source.
+- (mkdir ~/mininet-build && cd ~/mininet-build && git clone https://github.com/mininet/mininet && cd mininet && git checkout 2.2.2 && sudo util/install.sh)
+- sudo add-apt-repository ppa:avsm/ppa -y
+- sudo apt update
+- sudo apt install opam
+  # Depending on whether the Travis cache is present, ~/.opam will either be an empty directory or will have compiled OCaml libraries. Remove it and run `opam init` if it's empty.
+- (! rmdir ~/.opam) || opam init -y --no-setup --compiler=4.02.3
+- eval $(opam env)
+- opam repo add coq-released https://coq.inria.fr/opam/released --set-default
+- opam update
+- while sleep 9m; do printf '\n=== progress message to prevent travis from timing out ===\n'; done &
+- opam install coq.8.8.2 openflow.0.9.1 -y
+- kill %1
+
+cache:
+  directories:
+  - /home/travis/.opam
+
+script:
+- make coq
+- make compile-ocaml
+- out/openflow_controller &
+  # Mininet produces exit code 0 even when an exception is thrown (see https://github.com/mininet/mininet/issues/868), so search for text in the output instead.
+- sudo mn --custom src/mininet-topology.py --topo example --test ping_test --arp --mac --controller=remote,ip=127.0.0.1,port=6633 2>&1 | tee /dev/stderr | (! grep 'Caught exception.' > /dev/null)

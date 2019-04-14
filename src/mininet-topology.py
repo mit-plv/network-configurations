@@ -3,9 +3,9 @@
 from mininet.topo import Topo
 
 # Run on a mininet VM with:
-# sudo mn --custom src/mininet-topology.py --topo mytopo --arp --mac --controller=remote,ip=<controller IP>,port=6633
+# sudo mn --custom src/mininet-topology.py --topo example --arp --mac --controller=remote,ip=<controller IP>,port=6633
 
-class MyTopo(Topo):
+class ExampleTopo(Topo):
 	def __init__(self):
 		Topo.__init__(self)
 		sA = self.addSwitch('s1')
@@ -49,4 +49,30 @@ class MyTopo(Topo):
 		self.addLink(hE, sF, 1, 2)
 		self.addLink(hF, sF, 1, 1000)
 
-topos = {'mytopo': lambda: MyTopo()}
+topos = {'example': lambda: ExampleTopo()}
+
+def run_ping_test(net):
+	hA = net.hosts[0]
+	hB = net.hosts[1]
+
+
+	PING_FAILURE = 'packets transmitted, 0 received, 100% packet loss'
+
+	def ping(src, dest):
+	    return src.cmd('ping -c 5 %s' % dest.IP())
+
+	def assert_ping_success(src, dest):
+	    result = ping(src, dest)
+	    if PING_FAILURE in result:
+		raise AssertionError('Expected %s to be able to ping %s, but the ping failed' % (src, dest))
+
+	def assert_ping_failure(src, dest):
+	    result = ping(src, dest)
+	    if PING_FAILURE not in result:
+		raise AssertionError('Expected %s to be unable to ping %s, but the ping succeeded' % (src, dest))
+
+	assert_ping_failure(hB, hA)
+	assert_ping_success(hA, hB)
+	assert_ping_success(hB, hA)
+
+tests = {'ping_test': run_ping_test}
