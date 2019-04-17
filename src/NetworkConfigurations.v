@@ -1648,17 +1648,6 @@ Section Node.
   End OpenFlow.
 End Node.
 
-Ltac prove_decidable_equality :=
-  let S := match goal with
-  | [ |- forall x y : ?S, {x = y} + {x <> y} ] => S
-  | _ => fail 1 "Unexpected goal in decidable equality proof"
-  end in
-  intros;
-  repeat match goal with
-  | [ x : S |- _ ] => destruct x
-  end;
-  firstorder discriminate.
-
 Ltac prove_valid_topology topology :=
   let Switch := match goal with
   | [ |- {t : @network_topology ?Switch _ | valid_topology t} ] => Switch
@@ -2026,8 +2015,8 @@ Section NetworkExample.
 
   Definition all_nodes : {l : list (@Node ExampleSwitch ExampleHost) | Listing l} := ltac:(enumerate_nodes).
 
-  Definition ExampleSwitch_eq_dec : forall x y : ExampleSwitch, {x = y} + {x <> y} := ltac:(prove_decidable_equality).
-  Definition ExampleHost_eq_dec : forall x y : ExampleHost, {x = y} + {x <> y} := ltac:(prove_decidable_equality).
+  Definition ExampleSwitch_eq_dec : forall x y : ExampleSwitch, {x = y} + {x <> y} := ltac:(decide equality).
+  Definition ExampleHost_eq_dec : forall x y : ExampleHost, {x = y} + {x <> y} := ltac:(decide equality).
   Definition ExampleNode_eq_dec : forall x y : @Node ExampleSwitch ExampleHost, {x = y} + {x <> y} := @Node_eq_dec ExampleSwitch ExampleHost ExampleSwitch_eq_dec ExampleHost_eq_dec.
   Definition portNo := natToWord 16.
 
