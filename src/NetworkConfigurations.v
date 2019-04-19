@@ -781,8 +781,8 @@ Section Node.
   Definition exhaustive_routing_tables_generator (dec_next : dec_next_node) (all_nodes : list Node) (here : Switch) :=
     let all_hosts := filter_hosts all_nodes
     in map_filter (fun pair =>
-      match dec_next here {| Src := fst pair; Dest := snd pair |} with
-      | Some hop_target => Some ({| Src := fst pair; Dest := snd pair |}, hop_target)
+      match dec_next here {| Src := pair.(fst); Dest := pair.(snd) |} with
+      | Some hop_target => Some ({| Src := pair.(fst); Dest := pair.(snd) |}, hop_target)
       | None => None
       end
     ) (nodup Host_pair_eq_dec (list_prod all_hosts all_hosts)).
@@ -804,7 +804,7 @@ Section Node.
       dependent induction pairs; try (simpl; tauto).
       inversion_clear H1; subst.
       simpl.
-      destruct (dec_next here {| Src := fst a; Dest := snd a |}).
+      destruct (dec_next here {| Src := a.(fst); Dest := a.(snd) |}).
       + simpl.
         unfold not.
         intros.
@@ -833,7 +833,7 @@ Section Node.
       + apply map_filter_in_filtering in H0; try apply flow_Node_pair_eq_dec.
         destruct H0.
         assert (x = (current_flow.(Src), current_flow.(Dest))).
-        * destruct (dec_next here {| Src := fst x; Dest := snd x |}); try discriminate.
+        * destruct (dec_next here {| Src := x.(fst); Dest := x.(snd) |}); try discriminate.
           injection e.
           intros.
           subst.
@@ -947,7 +947,7 @@ Section Node.
 
       Inductive openflow_network_step : openflow_network_packet_state -> openflow_network_packet_state -> Prop :=
       | EmitPacketFromSrc : forall port src_host first_switch,
-        ipv4_eqb src_host.(host_ip) packet.(IpSrc) = true
+        src_host.(host_ip) = packet.(IpSrc)
           -> topology (HostNode src_host) (SwitchNode first_switch) = Some port
           -> openflow_network_step NotSentYet (EnRoute first_switch)
       | ForwardPacketToSwitch : forall port current_switch new_switch,
@@ -962,7 +962,7 @@ Section Node.
         get_matching_action packet current_switch.(entries) = Drop
           -> openflow_network_step (EnRoute current_switch) Dropped
       | AcceptPacket : forall dest_host,
-        ipv4_eqb dest_host.(host_ip) packet.(IpDest) = true
+        dest_host.(host_ip) = packet.(IpDest)
           -> openflow_network_step (ReceivedAtHost dest_host) Arrived
       .
 
@@ -1311,14 +1311,10 @@ Section Node.
       constructor.
       - exists Arrived.
         constructor.
-        rewrite ipv4_eqb_refl.
         reflexivity.
       - intros.
         apply or_introl.
-        inversion_clear H; try reflexivity; subst; repeat match goal with
-        | [ H : context[IpDest {| IpSrc := _; IpDest := _ |}] |- _ ] => simpl in H
-        | [ H : ipv4_eqb ?x ?x = false |- _ ] => rewrite ipv4_eqb_refl in H; discriminate
-        end.
+        inversion_clear H; reflexivity.
     Qed.
 
     Lemma always_reaches_state_after_bounded_steps_weakening : forall host_ip entries topology packet desired_state big_num_steps small_num_steps current_state,
@@ -1393,7 +1389,7 @@ Section Node.
           destruct Heqo.
           destruct_with_eqn (topology (HostNode src) (SwitchNode s)); try discriminate.
           apply EmitPacketFromSrc with (port := p) (src_host := src); try assumption.
-          apply ipv4_eqb_refl.
+          reflexivity.
         + intros.
           inversion_clear H4; try tauto.
           apply or_intror.
@@ -1402,7 +1398,6 @@ Section Node.
           assert (H' : dest = current_flow.(Dest)) by (rewrite Heqcurrent_flow; reflexivity); rewrite H' in *; clear H'.
           clear Heqcurrent_flow src dest.
           simpl in H5.
-          rewrite ipv4_eqb_iff in H5.
           apply H1 in H5.
           subst.
           constructor.
@@ -1506,14 +1501,11 @@ Section Node.
           apply or_intror.
           constructor.
           * exists (EnRoute x).
-            apply EmitPacketFromSrc with (port := p) (src_host := src_node); try assumption.
-            apply ipv4_eqb_iff.
-            assumption.
+            apply EmitPacketFromSrc with (port := p) (src_host := src_node); assumption.
           * intros.
             apply always_reaches_state_after_bounded_steps_combination with (mid_state := ReceivedAtHost dest_node); try (destruct packet; simpl in H5, H6; subst; apply reaches_arrived_state_from_destination_in_one_step).
             inversion_clear H9.
             --rewrite <- H5 in H10.
-              rewrite ipv4_eqb_iff in H10.
               apply H2 in H10.
               subst.
               clear x Heqo H7.
