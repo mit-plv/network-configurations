@@ -972,15 +972,15 @@ Section Node.
       (* Other header fields exist but are not used here *)
     }.
 
-    Inductive openflow_action :=
-    | ForwardToSwitch : Port -> openflow_action
-    | ForwardToDest : Port -> openflow_action
+    Inductive openflow_pseudo_action :=
+    | ForwardToSwitch : Port -> openflow_pseudo_action
+    | ForwardToDest : Port -> openflow_pseudo_action
     | Drop
     .
 
     Record openflow_flow_entry := {
       header_fields : header_fields_matcher;
-      action : openflow_action (* This can actually be a list of actions, but only one is used here *)
+      action : openflow_pseudo_action
       (* Entries also contain "counters" which are not used here *)
     }.
 
@@ -1086,11 +1086,6 @@ Section Node.
         end /\ all_ports_exist topology switch cdr
       end.
 
-    Definition should_arrive (policy : static_network_policy) src dest :=
-      if policy {| Src := src; Dest := dest |}
-      then true
-      else false.
-
     Record valid_openflow_entries (topology : network_topology) (policy : static_network_policy) (host_ip : host_ip_map) (entries : switch_openflow_entry_map) : Prop := {
       packets_arrive_iff_allowed : forall packet src_node dest_node,
         src_node.(host_ip) = packet.(IpSrc)
@@ -1103,7 +1098,7 @@ Section Node.
               entries
               topology
               packet
-              (if should_arrive policy src_node dest_node then Arrived else Dropped)
+              (if policy {| Src := src_node; Dest := dest_node |} then Arrived else Dropped)
               num_steps
               NotSentYet;
       existent_ports : forall switch, all_ports_exist topology switch switch.(entries)
@@ -1584,18 +1579,10 @@ Section Node.
         assert (dec_next_node_valid topology policy dec_next) by (apply all_pairs_paths_dec_generator_valid; assumption).
         assert (H'' := H7).
         apply path_exists_only_for_valid_flows with (current_flow := {| Src := src_node; Dest := dest_node |}) (first_switch := x) (port := p) in H7; try (simpl; assumption).
-        assert ((policy {| Src := src_node; Dest := dest_node |} = true) <-> should_arrive policy src_node dest_node = true). {
-          unfold should_arrive.
-          repeat match goal with
-          | [ |- context[if ?x then _ else _] ] => destruct x
-          | _ => tauto
-          end.
-        }
-        rewrite H8 in H7.
-        destruct_with_eqn (should_arrive policy src_node dest_node).
+        destruct_with_eqn (policy {| Src := src_node; Dest := dest_node |}).
         + assert (exists path, _) by (apply H7; reflexivity).
           clear H7.
-          destruct H9.
+          destruct H8.
           exists (1 + (length (filter_switches all_nodes) + 1) + 1).
           simpl.
           apply or_intror.
@@ -1604,17 +1591,17 @@ Section Node.
             apply EmitPacketFromSrc with (port := p) (src_host := src_node); assumption.
           * intros.
             apply always_reaches_state_after_bounded_steps_combination with (mid_state := ReceivedAtHost dest_node); try (destruct packet; simpl in H5, H6; subst; apply reaches_arrived_state_from_destination_in_one_step).
-            inversion_clear H9.
-            --rewrite <- H5 in H10.
-              apply H2 in H10.
+            inversion_clear H8.
+            --rewrite <- H5 in H9.
+              apply H2 in H9.
               subst.
               clear x Heqo H7.
               assert (H''' := H'').
               apply path_exists_only_for_valid_flows with (current_flow := {| Src := src_node; Dest := dest_node |}) (first_switch := first_switch) (port := port) in H''; try assumption.
-              rewrite H8 in H''.
+              rewrite Heqb in H''.
               assert (exists _, _) by (apply H''; reflexivity); clear H''.
               destruct H7.
-              clear H H11.
+              clear H H10.
               destruct packet; simpl in H5, H6; subst.
               apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := length x + 1).
               ++dependent induction x generalizing first_switch.
@@ -1658,10 +1645,6 @@ Section Node.
           simpl in H5, H6.
           subst.
           apply disallowed_packet_eventually_dropped with (policy := policy); try assumption.
-          destruct (policy {| Src := src_node; Dest := dest_node |}); try reflexivity.
-          assert (true = true) by reflexivity.
-          apply H8 in H5.
-          discriminate.
       - unfold openflow_entries, generate_openflow_entries.
         set (switch_tables := tables switch).
         dependent induction switch_tables; simpl; try tauto.
