@@ -1,8 +1,8 @@
-Require Import Coq.Lists.List.
+Require Import List.
 Import ListNotations.
-Require Import Coq.Program.Equality.
-Require Import Coq.Logic.FinFun.
-Require Import Coq.Bool.Bool.
+Require Import Equality.
+Require Import FinFun.
+Require Import Bool.
 Require Import ZArith.
 Require Import bbv.Word.
 
@@ -765,9 +765,6 @@ Section Node.
     clear - H4 H5.
     dependent induction x; simpl in *; destruct H4; eauto; congruence.
   Qed.
-
-  Definition fst {A} {B} (pair : A * B) := match pair with | (l, _) => l end.
-  Definition snd {A} {B} (pair : A * B) := match pair with | (_, r) => r end.
 
   Hypothesis Switch_eq_dec : forall x y : Switch, {x = y} + {x <> y}.
   Hypothesis Host_eq_dec : forall x y : Host, {x = y} + {x <> y}.
