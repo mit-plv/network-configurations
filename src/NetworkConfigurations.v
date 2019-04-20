@@ -57,6 +57,60 @@ Section Node.
         is_next_node_path next cdr hop_target current_flow
     end.
 
+  Fixpoint is_partial_next_node_path (next : next_node) path here end_switch current_flow :=
+    match path with
+    | [] => here = end_switch
+    | hop_target :: cdr =>
+        next here current_flow (SwitchNode hop_target) /\
+        is_partial_next_node_path next cdr hop_target end_switch current_flow
+    end.
+
+  Lemma is_partial_next_node_path_app : forall next current_flow first_half second_half start_switch mid_switch end_switch,
+    is_partial_next_node_path next first_half start_switch mid_switch current_flow
+      -> is_partial_next_node_path next second_half mid_switch end_switch current_flow
+      -> is_partial_next_node_path next (first_half ++ second_half) start_switch end_switch current_flow.
+  Proof.
+    intros.
+    dependent induction first_half; simpl in *; subst; try assumption.
+    constructor; try tauto.
+    apply IHfirst_half with (mid_switch := mid_switch); tauto.
+  Qed.
+
+  Lemma last_app {A} : forall (l : list A) (element : A) (default : A),
+    last (l ++ [element]) default = element.
+  Proof.
+    intros.
+    dependent induction l; try reflexivity.
+    simpl.
+    destruct_with_eqn (l ++ [element]); try (destruct l; discriminate).
+    rewrite <- Heql0.
+    apply IHl.
+  Qed.
+
+  Lemma last_default_replacement {A} : forall (l : list A) (head : A) (default1 : A) (default2 : A),
+    last (head :: l) default1 = last (head :: l) default2.
+  Proof.
+    intros.
+    dependent induction l using rev_ind; try reflexivity.
+    rewrite app_comm_cons.
+    repeat rewrite last_app.
+    reflexivity.
+  Qed.
+
+  Lemma next_node_path_has_partial : forall next path here current_flow,
+    is_next_node_path next path here current_flow
+      -> is_partial_next_node_path next path here (last path here) current_flow.
+  Proof.
+    intros.
+    dependent induction path; try (simpl in *; tauto).
+    simpl in H; constructor; try tauto.
+    rewrite last_default_replacement with (default2 := a).
+    simpl.
+    destruct path; try reflexivity.
+    apply IHpath.
+    tauto.
+  Qed.
+
   Record next_node_valid (topology : network_topology) (policy : static_network_policy) (next : next_node) := {
     all_hops_in_topology : forall here current_flow hop_target,
       next here current_flow hop_target -> if topology (SwitchNode here) hop_target then True else False;
@@ -69,11 +123,8 @@ Section Node.
         );
 
     no_black_holes : forall here current_flow hop_target,
-      (* TODO: Should this only be a requirement when a policy allows the flow?
-         Currently, this constraint requires that disallowed packets be dropped at
-         the first hop in the network, which limits some implementation choices.
-      *)
-      next here current_flow hop_target
+      policy current_flow = true
+        -> next here current_flow hop_target
         ->
           match hop_target with
           | HostNode dest =>
@@ -83,8 +134,12 @@ Section Node.
               is_next_node_path next path next_switch current_flow
           end;
 
-    all_paths_acyclic : forall path here current_flow,
-      is_next_node_path next path here current_flow -> NoDup (here :: path)
+    all_paths_acyclic : forall path here end_switch current_flow,
+      is_partial_next_node_path next path here end_switch current_flow -> NoDup (here :: path);
+
+    forwards_to_correct_host : forall here current_flow end_host,
+      next here current_flow (HostNode end_host)
+        -> end_host = current_flow.(Dest)
   }.
 
   Definition dec_next_node := Switch -> flow -> option Node.
@@ -297,11 +352,11 @@ Section Node.
     constructor; try tauto; omega.
   Qed.
 
-  Lemma all_pairs_paths_generate_strictly_decreasing_costs : forall (paths : all_pairs_paths) costs topology policy here current_flow path path' first_bound,
+  Lemma partial_all_pairs_paths_generate_strictly_decreasing_costs : forall (paths : all_pairs_paths) costs topology policy here end_switch current_flow path path' first_bound,
     generates_decreasing_costs topology paths costs
       -> paths here current_flow.(Dest) = Some path'
       -> path_cost topology costs here current_flow.(Dest) path' = Some first_bound
-      -> is_next_node_path (all_pairs_paths_next_node_generator paths topology policy) path here current_flow
+      -> is_partial_next_node_path (all_pairs_paths_next_node_generator paths topology policy) path here end_switch current_flow
       -> has_strictly_decreasing_costs topology paths costs path current_flow.(Dest) first_bound.
   Proof.
     intros.
@@ -386,8 +441,8 @@ Section Node.
       + intros.
         destruct H1.
         destruct x; simpl in H1; unfold all_pairs_paths_next_node_generator in H1; tauto.
-    - unfold all_pairs_paths_next_node_generator in H0.
-      destruct H0.
+    - unfold all_pairs_paths_next_node_generator in H1.
+      destruct H1.
       destruct hop_target.
       + apply all_pairs_paths_next_node_generator_creates_next_node_paths; try tauto.
         destruct_with_eqn (paths here current_flow.(Dest)); try tauto.
@@ -396,9 +451,9 @@ Section Node.
         apply paths_move_closer_to_destination in H.
         destruct H.
         destruct H.
-        specialize (H2 here).
-        specialize (H2 current_flow.(Dest)).
-        rewrite Heqo in H2.
+        specialize (H3 here).
+        specialize (H3 current_flow.(Dest)).
+        rewrite Heqo in H3.
         destruct (paths s current_flow.(Dest)); tauto.
       + destruct (paths here current_flow.(Dest)); try tauto.
         destruct l; try discriminate.
@@ -442,7 +497,12 @@ Section Node.
         end.
         eapply decreasing_costs_implies_nonmember with (costs := x); try eassumption.
         apply strictly_decreasing_costs_strengthening with (small_bound := n); try omega.
-        eapply all_pairs_paths_generate_strictly_decreasing_costs; eassumption.
+        eapply partial_all_pairs_paths_generate_strictly_decreasing_costs; try eassumption.
+    - unfold all_pairs_paths_next_node_generator in H0.
+      destruct H0.
+      destruct_with_eqn (paths here current_flow.(Dest)); try tauto.
+      destruct l; try discriminate.
+      congruence.
   Qed.
 
   Definition all_pairs_paths_dec_next_node_generator
@@ -474,6 +534,20 @@ Section Node.
     apply H0'; assumption.
   Qed.
 
+  Lemma is_partial_next_node_path_weakening : forall (strict_next lenient_next : next_node) path here end_switch current_flow,
+    is_partial_next_node_path strict_next path here end_switch current_flow
+      -> (forall here' current_flow' hop_target, strict_next here' current_flow' hop_target -> lenient_next here' current_flow' hop_target)
+      -> is_partial_next_node_path lenient_next path here end_switch current_flow.
+  Proof.
+    intros.
+    dependent induction path; simpl; simpl in H; eauto.
+    destruct H.
+    assert (H0' := H0).
+    apply IHpath with (here := a) (end_switch := end_switch) (current_flow := current_flow) in H0; try tauto.
+    constructor; try tauto.
+    apply H0'; assumption.
+  Qed.
+
   Lemma next_node_extensionality : forall next1 next2 topology policy,
     (forall here current_flow hop_target, next1 here current_flow hop_target <-> next2 here current_flow hop_target)
       -> next_node_valid topology policy next1
@@ -495,15 +569,16 @@ Section Node.
         destruct H0.
         exists x.
         eapply is_next_node_path_weakening; try eassumption; apply H.
-    - apply H in H1.
-      apply no_black_holes0 in H1.
+    - apply H in H2.
+      apply no_black_holes0 in H2; try assumption.
       destruct hop_target; try assumption.
-      destruct H1.
+      destruct H2.
       exists x.
       eapply is_next_node_path_weakening; try eassumption; apply H.
-    - eapply is_next_node_path_weakening in H1; try apply H.
+    - eapply is_partial_next_node_path_weakening in H1; try apply H.
       apply all_paths_acyclic0 in H1.
       assumption.
+    - eapply forwards_to_correct_host0; apply H; eassumption.
   Qed.
 
   Theorem all_pairs_paths_dec_generator_valid : forall paths topology policy,
@@ -1354,6 +1429,73 @@ Section Node.
         eauto.
     Qed.
 
+    Lemma no_cycles_implies_eventually_dropped : forall topology dec_next (policy : static_network_policy) current_flow all_nodes host_ip first_switch first_port,
+      valid_topology topology
+        -> Injective host_ip
+        -> dec_next_node_valid topology policy dec_next
+        -> policy current_flow = false
+        -> Listing all_nodes
+        -> topology (HostNode current_flow.(Src)) (SwitchNode first_switch) = Some first_port
+        -> always_reaches_state_after_bounded_steps
+            host_ip
+            (
+              generate_openflow_entries
+                (exhaustive_routing_tables_generator dec_next all_nodes)
+                host_ip
+                topology
+            )
+            topology
+            {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
+            Dropped
+            (length (filter_switches all_nodes))
+            (EnRoute first_switch).
+    Proof.
+      intros.
+      assert (forall path here end_switch, is_partial_next_node_path (fun here current_flow hop_target => dec_next here current_flow = Some hop_target) path here end_switch current_flow -> NoDup (here :: path)) by (intros; eapply all_paths_acyclic in H1; eassumption).
+      remember (@nil Switch) as path_so_far.
+      remember first_switch as current_switch.
+      rewrite Heqcurrent_switch in H4.
+      remember (length (filter_switches all_nodes)) as num_unvisited_switches.
+      assert (is_partial_next_node_path (fun here current_flow hop_target => dec_next here current_flow = Some hop_target) path_so_far first_switch current_switch current_flow) by (subst; reflexivity).
+      assert (num_unvisited_switches + length path_so_far = length (filter_switches all_nodes)) by (subst; simpl; omega).
+      clear Heqcurrent_switch Heqpath_so_far Heqnum_unvisited_switches.
+      dependent induction num_unvisited_switches generalizing current_switch path_so_far.
+      - apply H5 in H6.
+        enough (H' : length (first_switch :: path_so_far) <= length (filter_switches all_nodes)) by (simpl in *; intuition).
+        apply pidgeonhole_principle; try assumption.
+        intros.
+        apply filter_listing_nodes in H3.
+        destruct H3.
+        destruct H3.
+        apply H10.
+      - simpl.
+        apply or_intror.
+        assert (_ /\ _) by (apply dec_next_creates_valid_unique_state_transitions with (policy := policy) (all_nodes := all_nodes); try eassumption; eauto).
+        destruct H8.
+        constructor; try eassumption.
+        clear H8.
+        intros.
+        apply H9 in H8.
+        clear H9.
+        subst.
+        destruct_with_eqn (dec_next current_switch current_flow); try solve [ apply always_reaches_state_after_bounded_steps_weakening with (small_num_steps := 0); simpl; intuition ].
+        destruct n.
+        + apply IHnum_unvisited_switches with (path_so_far := path_so_far ++ [s]).
+          * apply is_partial_next_node_path_app with (mid_switch := current_switch); simpl; tauto.
+          * rewrite app_length; simpl; omega.
+        + assert (H' := H1).
+          apply forwards_to_correct_host with (here := current_switch) (current_flow := current_flow) (end_host := h) in H1; try assumption.
+          subst.
+          apply path_exists_only_for_valid_flows with (current_flow := current_flow) (first_switch := first_switch) (port := first_port) in H'; try assumption.
+          enough (policy current_flow = true) by congruence.
+          apply H'.
+          exists path_so_far.
+          clear - H6 Heqo.
+          dependent induction path_so_far generalizing first_switch; simpl in *; subst; try assumption.
+          constructor; try tauto.
+          apply IHpath_so_far; tauto.
+    Qed.
+
     Lemma disallowed_packet_eventually_dropped : forall topology policy dec_next all_nodes host_ip src dest,
       valid_topology topology
         -> Listing all_nodes
@@ -1376,12 +1518,9 @@ Section Node.
             NotSentYet.
     Proof.
       intros.
-      (* Currently, the definition of validity requires disallowed
-         packets to be *immediately* dropped, which simplifies
-         this proof. *)
-      exists 2.
       destruct_with_eqn (find (fun switch => if topology (HostNode src) (SwitchNode switch) then true else false) (filter_switches all_nodes)).
-      - simpl.
+      - exists (S (length (filter_switches all_nodes))).
+        simpl.
         apply or_intror.
         constructor.
         + exists (EnRoute s).
@@ -1392,7 +1531,6 @@ Section Node.
           reflexivity.
         + intros.
           inversion_clear H4; try tauto.
-          apply or_intror.
           remember {| Src := src; Dest := dest |} as current_flow.
           assert (H' : src = current_flow.(Src)) by (rewrite Heqcurrent_flow; reflexivity); rewrite H' in *; clear H'.
           assert (H' : dest = current_flow.(Dest)) by (rewrite Heqcurrent_flow; reflexivity); rewrite H' in *; clear H'.
@@ -1400,45 +1538,7 @@ Section Node.
           simpl in H5.
           apply H1 in H5.
           subst.
-          constructor.
-          * exists Dropped.
-            constructor.
-            apply get_matching_action_drops; try assumption; try (apply exhaustive_routing_tables_generator_valid; assumption).
-            destruct_with_eqn (dec_next first_switch current_flow); try reflexivity.
-            assert (H' := H2).
-            apply path_exists_only_for_valid_flows with (current_flow := current_flow) (first_switch := first_switch) (port := port) in H2; try assumption.
-            enough (policy current_flow = true) by congruence.
-            apply H2.
-            apply no_black_holes with (here := first_switch) (current_flow := current_flow) (hop_target := n) in H'; try assumption.
-            destruct n.
-            --destruct H'.
-              exists (s0 :: x).
-              simpl.
-              tauto.
-            --subst.
-              exists [].
-              assumption.
-          * intros.
-            apply or_introl.
-            inversion_clear H4; try reflexivity;
-            enough (H' : get_matching_action {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |} (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology first_switch) = Drop) by (rewrite H5 in H'; discriminate);
-            apply get_matching_action_drops; try assumption; try (apply exhaustive_routing_tables_generator_valid; assumption);
-            destruct_with_eqn (dec_next first_switch current_flow); try reflexivity;
-            assert (H' := H2);
-            apply no_black_holes with (topology := topology) (policy := policy) (current_flow := current_flow) (here := first_switch) (hop_target := n) in H2; try assumption;
-            apply path_exists_only_for_valid_flows with (current_flow := current_flow) (first_switch := first_switch) (port := port) in H'; try assumption;
-            enough (H'' : policy current_flow = true) by (rewrite H3 in H''; discriminate);
-            apply H';
-            (destruct n; [
-              destruct H2;
-              exists (s0 :: x);
-              simpl;
-              tauto |
-              subst;
-              exists [];
-              simpl;
-              assumption
-            ]).
+          eapply no_cycles_implies_eventually_dropped; eassumption.
       - apply no_isolated_hosts with (host := src) in H.
         destruct H.
         destruct_with_eqn (topology (HostNode src) (SwitchNode x)); try tauto.
@@ -1546,11 +1646,14 @@ Section Node.
                   apply IHx.
                   assumption.
               ++enough (length x <= length (filter_switches all_nodes)) by omega.
-                apply all_paths_acyclic with (path := x) (here := first_switch) (current_flow := {| Src := src_node; Dest := dest_node |}) in H'''; try assumption.
-                inversion_clear H'''.
-                apply pidgeonhole_principle; try assumption.
-                intros.
-                apply filter_listing_nodes; assumption.
+                destruct x; try (simpl; omega).
+                apply all_paths_acyclic with (path := s :: x) (here := first_switch) (end_switch := last (s :: x) first_switch) (current_flow := {| Src := src_node; Dest := dest_node |}) in H'''; try assumption.
+                **inversion_clear H'''.
+                  apply pidgeonhole_principle; try assumption.
+                  intros.
+                  apply filter_listing_nodes; assumption.
+                **apply next_node_path_has_partial.
+                  assumption.
         + destruct packet.
           simpl in H5, H6.
           subst.
