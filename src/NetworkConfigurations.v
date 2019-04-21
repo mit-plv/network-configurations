@@ -1063,7 +1063,7 @@ Section Node.
         |};
         action := match topology (SwitchNode switch) pair.(snd) with
         | Some port =>
-          if is_switch pair.(snd)
+          if pair.(snd).(is_switch)
           then ForwardToSwitch port
           else ForwardToDest port
 
@@ -1236,7 +1236,7 @@ Section Node.
         -> get_matching_action
           {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
           (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology here)
-          = if is_switch hop_target then ForwardToSwitch port else ForwardToDest port.
+          = if hop_target.(is_switch) then ForwardToSwitch port else ForwardToDest port.
     Proof.
       intros.
       assert (forall hop, dec_next here current_flow = Some hop <-> In (current_flow, hop) (exhaustive_routing_tables_generator dec_next all_nodes here)) by (intros; apply entries_match_next_node_result; assumption).
@@ -1338,9 +1338,9 @@ Section Node.
           get_matching_action
             {| IpSrc := current_flow.(Src).(host_ip); IpDest := current_flow.(Dest).(host_ip) |}
             (generate_openflow_entries (exhaustive_routing_tables_generator dec_next all_nodes) host_ip topology here)
-          = if is_switch n then ForwardToSwitch p else ForwardToDest p
+          = if n.(is_switch) then ForwardToSwitch p else ForwardToDest p
         ) by (apply get_matching_action_forwards_to_correct_port with (hop_target := n); assumption).
-        inversion_clear H6; subst; rewrite H8 in H7; destruct (is_switch n); try discriminate; injection H7; intros; subst.
+        inversion_clear H6; subst; rewrite H8 in H7; destruct n.(is_switch); try discriminate; injection H7; intros; subst.
 
         + enough (n = SwitchNode new_switch) by (subst; reflexivity).
           apply no_duplicate_ports with (node := SwitchNode here) (outgoing1 := n) (outgoing2 := SwitchNode new_switch) in H0.
@@ -1647,7 +1647,7 @@ Section Node.
         dependent induction switch_tables; simpl; try tauto.
         constructor; try assumption.
         destruct_with_eqn (topology (SwitchNode switch) a.(snd)); try tauto.
-        destruct (is_switch a.(snd)); eexists; eassumption.
+        destruct a.(snd).(is_switch); eexists; eassumption.
     Qed.
 
     Definition openflow_rules_generator
