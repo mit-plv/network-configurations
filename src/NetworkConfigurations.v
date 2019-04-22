@@ -1172,7 +1172,8 @@ Section Node.
       Context {policy_state : Set}.
       Variable topology : network_topology.
       Variable policy : @dynamic_network_policy policy_state.
-      Variable node_ip : host_ip_map.
+      Variable host_ip : host_ip_map.
+      Variable all_nodes : list Node.
 
       Record network_controller {controller_state} := {
         controller_system : flow_transition_system controller_state;
@@ -1194,8 +1195,23 @@ Section Node.
         ) (join_transition_systems policy.(policy_system) controller.(controller_system)) in
         invariant joined_sys (fun policy_and_controller_state =>
           let (policy_state, controller_state) := policy_and_controller_state in
-          valid_openflow_entries topology (policy.(policy_state_decider) policy_state) node_ip (controller.(controller_state_decider) controller_state)
+          valid_openflow_entries topology (policy.(policy_state_decider) policy_state) host_ip (controller.(controller_state_decider) controller_state)
         ).
+
+      Definition dynamic_controller paths := {|
+        controller_system := policy.(policy_system);
+        controller_state_decider := fun state =>
+        (
+          generate_openflow_entries
+          (
+            exhaustive_routing_tables_generator
+            (all_pairs_paths_dec_next_node_generator paths topology (policy.(policy_state_decider) state))
+            all_nodes
+          )
+          host_ip
+          topology
+        )
+      |}.
     End NetworkSystem.
 
     Ltac get_matching_action_unequal_induction host_ip Heqb IHl Src0 Src1 Dest0 Dest1 :=
@@ -1667,20 +1683,14 @@ Section Node.
         -> dynamic_policy_valid topology policy paths
         -> Listing all_nodes
         -> Injective host_ip
-        -> controller_implements_policy topology policy host_ip {|
-          controller_system := policy.(policy_system);
-          controller_state_decider := fun state =>
-          (
-            generate_openflow_entries
-            (
-              exhaustive_routing_tables_generator
-              (all_pairs_paths_dec_next_node_generator paths topology (policy.(policy_state_decider) state))
-              all_nodes
-            )
-            host_ip
+        -> controller_implements_policy topology policy host_ip (
+          dynamic_controller
             topology
-          )
-        |}.
+            policy
+            host_ip
+            all_nodes
+            paths
+        ).
     Proof.
       unfold controller_implements_policy, dynamic_policy_valid, invariant.
       intros.
