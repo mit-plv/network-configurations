@@ -35,7 +35,7 @@ Section Node.
       end;
     valid_port_numbers : forall switch1 node2,
       match topology (SwitchNode switch1) node2 with
-      | Some port => port <> (natToWord 16 0)
+      | Some port => port <> natToWord 16 0
       | None => True
       end;
     no_isolated_hosts : forall host,
