@@ -40,9 +40,7 @@ Section Node.
       end;
     no_isolated_hosts : forall host,
       exists switch,
-        if topology (HostNode host) (SwitchNode switch)
-        then True
-        else False
+        topology (HostNode host) (SwitchNode switch) <> None
   }.
 
   Definition static_network_policy := flow -> bool.
@@ -113,7 +111,7 @@ Section Node.
 
   Record next_node_valid (topology : network_topology) (policy : static_network_policy) (next : next_node) := {
     all_hops_in_topology : forall here current_flow hop_target,
-      next here current_flow hop_target -> if topology (SwitchNode here) hop_target then True else False;
+      next here current_flow hop_target -> topology (SwitchNode here) hop_target <> None;
 
     path_exists_only_for_valid_flows : forall current_flow first_switch port,
       topology (HostNode current_flow.(Src)) (SwitchNode first_switch) = Some port
@@ -151,9 +149,9 @@ Section Node.
 
   Fixpoint is_path_in_topology (topology : network_topology) src dest path :=
     match path with
-    | [] => if topology (SwitchNode src) (HostNode dest) then True else False
+    | [] => topology (SwitchNode src) (HostNode dest) <> None
     | hop_target :: cdr =>
-      (if topology (SwitchNode src) (SwitchNode hop_target) then True else False) /\
+      topology (SwitchNode src) (SwitchNode hop_target) <> None /\
       is_path_in_topology topology hop_target dest cdr
     end.
 
@@ -252,8 +250,8 @@ Section Node.
     assert (H' := H).
     apply paths_move_closer_to_destination in H'.
     destruct H', H1.
-    assert (if path_cost topology x hop_target current_flow.(Dest) l then True else False).
-    - destruct_with_eqn (path_cost topology x hop_target current_flow.(Dest) l); try tauto.
+    assert (path_cost topology x hop_target current_flow.(Dest) l <> None).
+    - destruct_with_eqn (path_cost topology x hop_target current_flow.(Dest) l); try discriminate.
       specialize (H2 hop_target).
       specialize (H2 current_flow.(Dest)).
       rewrite Heqo in H2.
@@ -1757,7 +1755,7 @@ Ltac prove_valid_topology topology :=
       evar (adjacent_switch : Switch);
       exists adjacent_switch;
       destruct_with_eqn adjacent_switch; repeat match goal with
-      | [ H : adjacent_switch = ?val |- True ] => instantiate (adjacent_switch := val); apply I
+      | [ H : adjacent_switch = ?val |- Some _ <> None ] => instantiate (adjacent_switch := val); discriminate
       | _ => idtac
       end; discriminate
   | _ => firstorder discriminate
@@ -2002,7 +2000,7 @@ Ltac prove_dynamic_policy_valid Switch Host topology policy costs Switch_eq_dec 
   assert (invariant_implies_path_exists : forall st current_flow first_switch,
     policy_invariant st
       -> policy_state_decider policy st current_flow = true
-      -> (if topology (HostNode current_flow.(Src)) (SwitchNode first_switch) then True else False)
+      -> (topology (HostNode current_flow.(Src)) (SwitchNode first_switch) <> None)
       -> paths first_switch current_flow.(Dest) = None
       -> False
   );
@@ -2052,7 +2050,7 @@ Ltac prove_dynamic_policy_valid Switch Host topology policy costs Switch_eq_dec 
         destruct src, dest;
         unfold paths;
         simpl;
-        tauto
+        firstorder discriminate
       | [ |- match paths ?first_switch ?current_flow.(Dest) with | Some _ => True | None => False end ] =>
         destruct_with_eqn (paths first_switch current_flow.(Dest));
         [ tauto | idtac ];
@@ -2060,7 +2058,7 @@ Ltac prove_dynamic_policy_valid Switch Host topology policy costs Switch_eq_dec 
         eapply invariant_implies_path_exists;
         try eassumption;
         match goal with
-        | [ H : ?cond = Some _ |- if ?cond then True else False ] => rewrite H; tauto
+        | [ H : ?cond = Some _ |- ?cond <> None ] => rewrite H; discriminate
         end
       | [ |- exists x, generates_decreasing_costs topology paths x ] =>
         exists costs;
