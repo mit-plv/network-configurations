@@ -26,8 +26,6 @@ Section Node.
   Definition network_topology := Node -> Node -> option Port.
 
   Record valid_topology (topology : network_topology) := {
-    no_direct_host_links : forall host1 host2,
-      topology (HostNode host1) (HostNode host2) = None;
     no_duplicate_ports : forall node outgoing1 outgoing2,
       match topology node outgoing1, topology node outgoing2 with
       | Some port1, Some port2 => port1 = port2 -> outgoing1 = outgoing2
